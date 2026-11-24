@@ -3,7 +3,7 @@ import Foundation
 import Network
 
 /// Risposta grezza letta da un controller Magic Home / Zengge sulla porta TCP 5577 (`0x81 0x8A 0x8B 0x96`).
-struct StatoMagicHome: Sendable {
+struct StatoMagicHome: Sendable, Hashable {
     let modello: UInt8
     let versione: UInt8
     let accesa: Bool
