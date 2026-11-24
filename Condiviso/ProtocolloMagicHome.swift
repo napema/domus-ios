@@ -84,7 +84,7 @@ enum ProtocolloMagicHome {
         case .dimmer:
             let m = max(r, g, b)
             corpo = [0x31, m, 0x00, 0x00, 0x00, 0x0F, 0x0F]
-        case .rgbw:
+        case .rgbw, .broadlink:
             corpo = [0x31, r, g, b, 0x00, 0xF0, 0x0F]
         }
         return await inviaPacchetto(ip: ip, porta: porta, dati: pacchettoConChecksum(corpo), attendiRisposta: 0) != nil
@@ -111,7 +111,7 @@ enum ProtocolloMagicHome {
             let ww = UInt8(min(255, max(0, Int(((1.0 - temp) * lum * 255.0).rounded()))))
             let cw = UInt8(min(255, max(0, Int((temp * lum * 255.0).rounded()))))
             corpo = [0x31, 0x00, 0x00, 0x00, ww, cw, 0x0F, 0x0F]
-        case .rgbw:
+        case .rgbw, .broadlink:
             if temp <= 0.25 {
                 let ww = UInt8(min(255, max(1, Int((lum * 255.0).rounded()))))
                 corpo = [0x31, 0x00, 0x00, 0x00, ww, 0x0F, 0x0F]
