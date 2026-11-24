@@ -66,7 +66,7 @@ actor ProtocolloTuyaCloud {
         let durata = (ris["expire_time"] as? Double) ?? 7000
         tokenAttivo = accessToken
         idChiaveToken = chiaveCache
-        scadenzaToken = Date().addingTimeInterval(max(60, durata - 120))
+        scadenzaToken = Date().addingTimeInterval(min(2400, max(60, durata - 300)))
         return accessToken
     }
 
@@ -130,17 +130,23 @@ actor ProtocolloTuyaCloud {
         credenziali: CredenzialiTuya
     ) async throws -> [String: Any] {
         var token = try await ottieniToken(credenziali: credenziali)
-        var dati = try await richiestaFirmata(metodo: metodo, percorso: percorso, corpo: corpo, token: token, credenziali: credenziali)
-        var json = (try? JSONSerialization.jsonObject(with: dati) as? [String: Any]) ?? [:]
-
-        // Codice 1010 = token scaduto: rigenera una volta
-        if (json["code"] as? Int) == 1010 {
+        let codiciAuth: Set<Int> = [1004, 1010, 1011, 1012]
+        do {
+            let dati = try await richiestaFirmata(metodo: metodo, percorso: percorso, corpo: corpo, token: token, credenziali: credenziali)
+            let json = (try? JSONSerialization.jsonObject(with: dati) as? [String: Any]) ?? [:]
+            if let cod = json["code"] as? Int, codiciAuth.contains(cod) {
+                invalidaToken()
+                token = try await ottieniToken(credenziali: credenziali)
+                let dati2 = try await richiestaFirmata(metodo: metodo, percorso: percorso, corpo: corpo, token: token, credenziali: credenziali)
+                return (try? JSONSerialization.jsonObject(with: dati2) as? [String: Any]) ?? [:]
+            }
+            return json
+        } catch {
             invalidaToken()
             token = try await ottieniToken(credenziali: credenziali)
-            dati = try await richiestaFirmata(metodo: metodo, percorso: percorso, corpo: corpo, token: token, credenziali: credenziali)
-            json = (try? JSONSerialization.jsonObject(with: dati) as? [String: Any]) ?? [:]
+            let dati2 = try await richiestaFirmata(metodo: metodo, percorso: percorso, corpo: corpo, token: token, credenziali: credenziali)
+            return (try? JSONSerialization.jsonObject(with: dati2) as? [String: Any]) ?? [:]
         }
-        return json
     }
 
     // MARK: - Importazione automatica dispositivi e local_key
@@ -367,11 +373,21 @@ actor ProtocolloTuyaCloud {
         ]
 
         if luce.accensione && luce.schemaTuya == .lucePixel {
-            let h = Int((min(1, max(0, luce.tonalita)) * 360.0).rounded()) % 360
-            let s = luce.modo == .bianco ? 0 : Int((min(1, max(0, luce.saturazione)) * 1000.0).rounded())
-            let v = Int((max(0.01, min(1, luce.luminosita)) * 1000.0).rounded())
-            comandi.append(["code": "work_mode", "value": "colour"])
-            comandi.append(["code": "colour_data", "value": ["h": h, "s": s, "v": v]])
+            if luce.modo == .effetto {
+                let payload = EffettoLuce.payloadDreamlight(
+                    codiceEffetto: luce.effetto,
+                    velocita: luce.velocitaEffetto,
+                    luminosita: luce.luminosita
+                )
+                comandi.append(["code": "work_mode", "value": "scene"])
+                comandi.append(["code": "dreamlight_scene_mode", "value": payload])
+            } else {
+                let h = luce.modo == .bianco ? Int((luce.hsBiancoSimulato.h * 360.0).rounded()) % 360 : Int((min(1, max(0, luce.tonalita)) * 360.0).rounded()) % 360
+                let s = luce.modo == .bianco ? Int((luce.hsBiancoSimulato.s * 1000.0).rounded()) : Int((min(1, max(0, luce.saturazione)) * 1000.0).rounded())
+                let v = Int((max(0.01, min(1, luce.luminosita)) * 1000.0).rounded())
+                comandi.append(["code": "work_mode", "value": "colour"])
+                comandi.append(["code": "colour_data", "value": ["h": h, "s": s, "v": v]])
+            }
         } else if luce.accensione && luce.schemaTuya != .soloInterruttore {
             switch luce.modo {
             case .bianco:
@@ -387,7 +403,18 @@ actor ProtocolloTuyaCloud {
                     comandi.append(["code": "bright_value", "value": lum])
                     comandi.append(["code": "temp_value", "value": temp])
                 }
-            case .colore, .effetto:
+            case .effetto:
+                if luce.schemaTuya == .luceV2 {
+                    comandi.append(["code": "work_mode", "value": "scene"])
+                    comandi.append(["code": "scene_data_v2", "value": EffettoLuce.scenaTuyaV2(codiceEffetto: luce.effetto, luminosita: luce.luminosita)])
+                } else {
+                    comandi.append(["code": "work_mode", "value": "colour"])
+                    let h = Int((min(1, max(0, luce.tonalita)) * 360.0).rounded()) % 360
+                    let s = Int((min(1, max(0, luce.saturazione)) * 255.0).rounded())
+                    let v = Int((max(0.01, min(1, luce.luminosita)) * 255.0).rounded())
+                    comandi.append(["code": "colour_data", "value": ["h": h, "s": s, "v": v]])
+                }
+            case .colore:
                 comandi.append(["code": "work_mode", "value": "colour"])
                 let h = Int((min(1, max(0, luce.tonalita)) * 360.0).rounded()) % 360
                 if luce.schemaTuya == .luceV2 {

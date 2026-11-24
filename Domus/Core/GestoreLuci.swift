@@ -23,6 +23,7 @@ final class GestoreLuci: ObservableObject {
     @Published var mostraAggiungi = false
 
     private var inviiPendenti: [String: Task<Void, Never>] = [:]
+    private var ultimoRecuperoTuya: Date = .distantPast
     private let inDemo = ProcessInfo.processInfo.environment["DOMUS_DEMO"] != nil
 
     private init() {
@@ -126,7 +127,11 @@ final class GestoreLuci: ObservableObject {
             }
             guard !Task.isCancelled, let self, let snapshot = self.luce(id: id) else { return }
             let cred = self.credenzialiTuya
-            let esito = await ControlloRapido.applica(snapshot, credenzialiTuya: cred)
+            var esito = await ControlloRapido.applica(snapshot, credenzialiTuya: cred)
+            if snapshot.marca == .tuya && !esito.riuscito {
+                await ProtocolloTuyaCloud.condiviso.invalidaToken()
+                esito = await ControlloRapido.applica(snapshot, credenzialiTuya: cred)
+            }
             guard !Task.isCancelled else { return }
             if let i = self.luci.firstIndex(where: { $0.id == id }) {
                 self.luci[i].online = esito.riuscito
@@ -135,6 +140,14 @@ final class GestoreLuci: ObservableObject {
                     self.luci[i].versioneProtocollo = ver
                 }
                 ArchivioCondiviso.salvaLuci(self.luci)
+            }
+            if snapshot.marca == .tuya && !esito.viaLocale,
+               ReteLocale.infoWiFi() != nil,
+               Date().timeIntervalSince(self.ultimoRecuperoTuya) > 120 {
+                self.ultimoRecuperoTuya = Date()
+                Task { [weak self] in
+                    await self?.riallineaIPLocaliTuyaSilenzioso()
+                }
             }
         }
     }
@@ -191,22 +204,27 @@ final class GestoreLuci: ObservableObject {
         let cred = credenzialiTuya
         let copia = luci
 
-        await withTaskGroup(of: (String, StatoMagicHome?, Luce?).self) { gruppo in
+        await withTaskGroup(of: (String, StatoMagicHome?, StatoBroadLink?, Luce?).self) { gruppo in
             for l in copia {
                 gruppo.addTask {
                     switch l.marca {
                     case .magicHome:
-                        guard let ip = l.ip, !ip.isEmpty else { return (l.id, nil, nil) }
-                        let stato = await ProtocolloMagicHome.leggiStato(ip: ip, porta: l.porta)
-                        return (l.id, stato, nil)
+                        guard let ip = l.ip, !ip.isEmpty else { return (l.id, nil, nil, nil) }
+                        if l.varianteMagic == .broadlink {
+                            let statoBL = await ProtocolloBroadLink.leggiStato(ip: ip, mac: l.mac)
+                            return (l.id, nil, statoBL, nil)
+                        } else {
+                            let stato = await ProtocolloMagicHome.leggiStato(ip: ip, porta: l.porta)
+                            return (l.id, stato, nil, nil)
+                        }
                     case .tuya:
                         let aggCloud = await ProtocolloTuyaCloud.condiviso.aggiornaStato(di: l, credenziali: cred)
-                        return (l.id, nil, aggCloud)
+                        return (l.id, nil, nil, aggCloud)
                     }
                 }
             }
 
-            for await (id, statoMH, luceTuya) in gruppo {
+            for await (id, statoMH, statoBL, luceTuya) in gruppo {
                 guard let idx = luci.firstIndex(where: { $0.id == id }) else { continue }
                 if let statoMH {
                     luci[idx].online = true
@@ -226,6 +244,15 @@ final class GestoreLuci: ObservableObject {
                         luci[idx].modo = .colore
                         luci[idx].impostaDaRGB(r: statoMH.r, g: statoMH.g, b: statoMH.b)
                     }
+                } else if let statoBL {
+                    luci[idx].online = true
+                    luci[idx].viaLocale = true
+                    luci[idx].accensione = statoBL.accesa
+                    luci[idx].luminosita = statoBL.luminosita
+                    luci[idx].temperatura = statoBL.temperatura
+                    luci[idx].tonalita = statoBL.tonalita
+                    luci[idx].saturazione = statoBL.saturazione
+                    luci[idx].modo = statoBL.modoBianco ? .bianco : .colore
                 } else if let luceTuya {
                     luci[idx].accensione = luceTuya.accensione
                     luci[idx].luminosita = luceTuya.luminosita
@@ -257,10 +284,11 @@ final class GestoreLuci: ObservableObject {
 
         async let udpMagic = ProtocolloMagicHome.scopriViaUDP(indirizzoBroadcast: wifi?.broadcast ?? "255.255.255.255")
         async let tcpMagic = Self.scansionaSeWiFi(wifi, porta: 5577)
+        async let broadLinkMagic = Self.scansionaBroadLink(wifi)
         async let udpTuya = ProtocolloTuyaLocale.ascoltaAnnunciUDP()
         async let tcpTuya = Self.scansionaSeWiFi(wifi, porta: 6668)
 
-        let (risUDPMagic, ipTCPMagic, annunciTuya, ipTCPTuya) = await (udpMagic, tcpMagic, udpTuya, tcpTuya)
+        let (risUDPMagic, ipTCPMagic, risBroadLink, annunciTuya, ipTCPTuya) = await (udpMagic, tcpMagic, broadLinkMagic, udpTuya, tcpTuya)
 
         var mappaMagic: [String: ScopertaMagicHome] = [:]
         for s in risUDPMagic { mappaMagic[s.ip] = s }
@@ -275,7 +303,8 @@ final class GestoreLuci: ObservableObject {
         for (ip, scoperta) in mappaMagic {
             let stato = await ProtocolloMagicHome.leggiStato(ip: ip, porta: 5577)
             // Verifica che risponda davvero al protocollo Magic Home (o provenga da UDP 48899)
-            guard stato != nil || scoperta.mac != nil else { continue }
+            // Porta 5577 aperta = controller Magic Home: lo accettiamo anche se lo stato tarda a rispondere
+            _ = scoperta.mac
 
             let idUnivoco = scoperta.mac.map { "mh-\($0.lowercased())" } ?? "mh-\(ip.replacingOccurrences(of: ".", with: "-"))"
             if let idx = luci.firstIndex(where: { $0.id == idUnivoco || ($0.marca == .magicHome && $0.ip == ip) }) {
@@ -314,6 +343,59 @@ final class GestoreLuci: ObservableObject {
             }
         }
 
+        // 1b. Integra lampadine Magic Home / BroadLink (UDP porta 80)
+        var bloccataTrovata: String?
+        for scoperta in risBroadLink {
+            let idUnivoco = "mh-bl-\(scoperta.mac.lowercased())"
+            let statoBL = await ProtocolloBroadLink.leggiStato(ip: scoperta.ip, mac: scoperta.mac)
+            if scoperta.bloccata && statoBL == nil {
+                bloccataTrovata = scoperta.ip
+            }
+            if let idx = luci.firstIndex(where: { $0.id == idUnivoco || ($0.marca == .magicHome && $0.varianteMagic == .broadlink && $0.ip == scoperta.ip) }) {
+                luci[idx].ip = scoperta.ip
+                luci[idx].porta = 80
+                luci[idx].mac = scoperta.mac
+                luci[idx].varianteMagic = .broadlink
+                luci[idx].online = true
+                luci[idx].viaLocale = true
+                if let statoBL {
+                    luci[idx].accensione = statoBL.accesa
+                    luci[idx].luminosita = statoBL.luminosita
+                    luci[idx].temperatura = statoBL.temperatura
+                    luci[idx].tonalita = statoBL.tonalita
+                    luci[idx].saturazione = statoBL.saturazione
+                    luci[idx].modo = statoBL.modoBianco ? .bianco : .colore
+                }
+                aggiunteOAggiornate += 1
+            } else {
+                var nuova = Luce(
+                    id: idUnivoco,
+                    nome: scoperta.nome,
+                    stanza: "Casa",
+                    marca: .magicHome,
+                    tipo: .lampadina,
+                    accensione: statoBL?.accesa ?? false,
+                    luminosita: statoBL?.luminosita ?? 0.85,
+                    temperatura: statoBL?.temperatura ?? 0.35,
+                    tonalita: statoBL?.tonalita ?? 0.08,
+                    saturazione: statoBL?.saturazione ?? 0.85,
+                    modo: (statoBL?.modoBianco ?? true) ? .bianco : .colore,
+                    ip: scoperta.ip,
+                    porta: 80,
+                    mac: scoperta.mac,
+                    varianteMagic: .broadlink,
+                    online: true,
+                    viaLocale: true
+                )
+                nuova.preferitaWidget = true
+                luci.append(nuova)
+                aggiunteOAggiornate += 1
+            }
+        }
+        if let ipBloccato = bloccataTrovata {
+            mostraAvviso("Trovata lampadina Magic Home (\(ipBloccato)), ma è bloccata: disattiva «Blocca dispositivo» nell'app Magic Home", errore: true)
+        }
+
         // 2. Associa gli IP locali e la versione protocollo (3.3 / 3.4 / 3.5) alle luci Tuya
         for annuncio in annunciTuya {
             if let idx = luci.firstIndex(where: { $0.tuyaId == annuncio.gwId }) {
@@ -350,6 +432,49 @@ final class GestoreLuci: ObservableObject {
     private nonisolated static func scansionaSeWiFi(_ wifi: InfoReteWiFi?, porta: UInt16) async -> [String] {
         guard let w = wifi else { return [] }
         return await ReteLocale.scansionaPorta(prefisso: w.prefissoSottorete, porta: porta, escludendo: w.ipLocale)
+    }
+
+    private nonisolated static func scansionaBroadLink(_ wifi: InfoReteWiFi?) async -> [ScopertaBroadLink] {
+        guard let w = wifi else { return [] }
+        return await ProtocolloBroadLink.scopri(ipLocale: w.ipLocale, prefisso: w.prefissoSottorete, broadcast: w.broadcast)
+    }
+
+    private func riallineaIPLocaliTuyaSilenzioso() async {
+        guard let wifi = ReteLocale.infoWiFi() else { return }
+        async let annunciTuya = ProtocolloTuyaLocale.ascoltaAnnunciUDP()
+        async let ipTCPTuya = Self.scansionaSeWiFi(wifi, porta: 6668)
+        let (annunci, ipAperti) = await (annunciTuya, ipTCPTuya)
+        var cambiato = false
+
+        for a in annunci {
+            if let idx = luci.firstIndex(where: { $0.tuyaId == a.gwId }) {
+                if luci[idx].ip != a.ip || luci[idx].versioneProtocollo != a.versione {
+                    luci[idx].ip = a.ip
+                    luci[idx].versioneProtocollo = a.versione
+                    luci[idx].viaLocale = true
+                    luci[idx].online = true
+                    cambiato = true
+                }
+            }
+        }
+
+        let ipLiberi = ipAperti.filter { ip in !luci.contains(where: { $0.ip == ip }) }
+        if !ipLiberi.isEmpty {
+            for idx in luci.indices where luci[idx].marca == .tuya {
+                guard let devId = luci[idx].tuyaId, let key = luci[idx].localKey, key.utf8.count == 16 else { continue }
+                for ip in ipLiberi {
+                    if let ver = await ProtocolloTuyaLocale.verificaCorrispondenza(ip: ip, devId: devId, localKey: key) {
+                        luci[idx].ip = ip
+                        luci[idx].versioneProtocollo = ver
+                        luci[idx].viaLocale = true
+                        luci[idx].online = true
+                        cambiato = true
+                        break
+                    }
+                }
+            }
+        }
+        if cambiato { salva() }
     }
 
     // MARK: - Sincronizzazione Cloud Tuya + abbinamento automatico LAN

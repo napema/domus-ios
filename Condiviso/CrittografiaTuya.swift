@@ -135,6 +135,38 @@ enum CrittografiaTuya {
             return try? AES.GCM.open(box, using: simmetrica)
         }
     }
+
+    /// Cifratura/decifratura AES-128-CBC senza padding per lampadine BroadLink / Magic Home (`0x60C8`).
+    static func aesCBC(_ dati: Data, chiave: Data, iv: Data, cifra: Bool) -> Data? {
+        guard chiave.count == kCCKeySizeAES128, iv.count == kCCBlockSizeAES128, !dati.isEmpty else { return nil }
+        let capienza = dati.count + kCCBlockSizeAES128
+        var uscita = Data(count: capienza)
+        var scritti: size_t = 0
+        let stato = uscita.withUnsafeMutableBytes { outPtr in
+            dati.withUnsafeBytes { inPtr in
+                chiave.withUnsafeBytes { keyPtr in
+                    iv.withUnsafeBytes { ivPtr in
+                        CCCrypt(
+                            CCOperation(cifra ? kCCEncrypt : kCCDecrypt),
+                            CCAlgorithm(kCCAlgorithmAES),
+                            0,
+                            keyPtr.baseAddress,
+                            kCCKeySizeAES128,
+                            ivPtr.baseAddress,
+                            inPtr.baseAddress,
+                            dati.count,
+                            outPtr.baseAddress,
+                            capienza,
+                            &scritti
+                        )
+                    }
+                }
+            }
+        }
+        guard stato == kCCSuccess else { return nil }
+        uscita.count = scritti
+        return uscita
+    }
 }
 
 extension Data {

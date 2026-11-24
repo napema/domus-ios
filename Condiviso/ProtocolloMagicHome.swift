@@ -17,6 +17,7 @@ struct StatoMagicHome: Sendable, Hashable {
 
     var varianteRilevata: VarianteMagicHome {
         if modello == 0x41 { return .dimmer }
+        if modello == 0x33 || modello == 0x04 { return .rgbClassico }
         if modello == 0x35 || (modello == 0x44 && versione >= 7) { return .rgbcct }
         if versione == 0 && modello == 0x04 { return .rgbClassico }
         return .rgbw
@@ -265,10 +266,10 @@ enum ProtocolloMagicHome {
     }
 
     private static func kelvinVersoRGB(temperatura: Double, luminosita: Double) -> (UInt8, UInt8, UInt8) {
-        let t = min(1.0, max(0.0, temperatura))
-        let r = (1.0 - t * 0.12) * luminosita
-        let g = (0.74 + t * 0.22) * luminosita
-        let b = (0.42 + t * 0.58) * luminosita
+        let c = Luce.rgbBianco(temperatura: temperatura)
+        let r = c.r * luminosita
+        let g = c.g * luminosita
+        let b = c.b * luminosita
         return (
             UInt8(min(255, max(0, Int((r * 255.0).rounded())))),
             UInt8(min(255, max(0, Int((g * 255.0).rounded())))),

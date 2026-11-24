@@ -54,10 +54,10 @@ enum ReteLocale {
     }
 
     /// Scansiona tutti i 254 indirizzi della sottorete `/24` cercando host con una porta TCP aperta (5577 o 6668).
-    static func scansionaPorta(prefisso: String, porta: UInt16, escludendo ipProprio: String? = nil, timeoutMs: Int32 = 340) async -> [String] {
+    static func scansionaPorta(prefisso: String, porta: UInt16, escludendo ipProprio: String? = nil, timeoutMs: Int32 = 900) async -> [String] {
         let candidati: [String] = (1...254).map { "\(prefisso).\($0)" }.filter { $0 != ipProprio }
         var aperti: [String] = []
-        let dimensioneBlocco = 64
+        let dimensioneBlocco = 100
 
         for inizio in stride(from: 0, to: candidati.count, by: dimensioneBlocco) {
             let fine = min(inizio + dimensioneBlocco, candidati.count)
@@ -106,12 +106,23 @@ enum ReteLocale {
                 }
 
                 var pfds = fds.map { pollfd(fd: $0.fd, events: Int16(POLLOUT), revents: 0) }
-                _ = poll(&pfds, nfds_t(pfds.count), timeoutMs)
+                // poll ritorna al primo socket pronto: si ripete fino alla scadenza raccogliendo tutti
+                let scadenza = Date().addingTimeInterval(Double(timeoutMs) / 1000.0)
+                var finali: [Int: Int16] = [:]
+                while finali.count < pfds.count {
+                    let resto = Int32(max(0, scadenza.timeIntervalSinceNow * 1000.0))
+                    if resto == 0 { break }
+                    _ = poll(&pfds, nfds_t(pfds.count), resto)
+                    for i in pfds.indices where pfds[i].fd >= 0 && pfds[i].revents != 0 {
+                        finali[i] = pfds[i].revents
+                        pfds[i].fd = -1
+                    }
+                }
 
                 var attivi: [String] = []
                 for (indice, elemento) in fds.enumerated() {
                     defer { close(elemento.fd) }
-                    let rev = pfds[indice].revents
+                    let rev = finali[indice] ?? 0
                     guard (rev & Int16(POLLOUT)) != 0, (rev & Int16(POLLERR | POLLHUP)) == 0 else { continue }
                     var errSocket: Int32 = 0
                     var lun = socklen_t(MemoryLayout<Int32>.size)

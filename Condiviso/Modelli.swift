@@ -149,21 +149,23 @@ enum SchemaTuya: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// Variante hardware dei controller Zengge / Magic Home (porta TCP 5577).
+/// Variante hardware dei controller Zengge / Magic Home (porta TCP 5577) e BroadLink (UDP 80).
 enum VarianteMagicHome: String, Codable, CaseIterable, Identifiable, Sendable {
-    case rgbw = "rgbw"          // 8 byte con maschera 0xF0 / 0x0F (strisce e lampadine RGBW)
-    case rgbcct = "rgbcct"      // 9 byte con WW + CW e maschera 0xF0 / 0x0F (lampadine RGB+CCT)
-    case rgbClassico = "rgb"    // 8 byte con maschera 0x00 (strisce RGB classiche a 3 canali)
-    case dimmer = "dimmer"      // Monocromatico
+    case rgbw = "rgbw"           // 8 byte con maschera 0xF0 / 0x0F (strisce e lampadine RGBW)
+    case rgbcct = "rgbcct"       // 9 byte con WW + CW e maschera 0xF0 / 0x0F (lampadine RGB+CCT)
+    case rgbClassico = "rgb"     // 8 byte con maschera 0x00 (strisce RGB classiche a 3 canali)
+    case dimmer = "dimmer"       // Monocromatico
+    case broadlink = "broadlink" // Lampadine Magic Home / BroadLink LB1 (0x60C8 su UDP 80)
 
     var id: String { rawValue }
 
     var descrizione: String {
         switch self {
-        case .rgbw: return "RGB + Bianco (8 byte)"
-        case .rgbcct: return "RGB + Bianco Caldo/Freddo (9 byte)"
-        case .rgbClassico: return "Striscia RGB classica"
-        case .dimmer: return "Dimmer monocromatico"
+        case .rgbw: return "RGB + Bianco (8 byte · 5577)"
+        case .rgbcct: return "RGB + Bianco Caldo/Freddo (9 byte · 5577)"
+        case .rgbClassico: return "Striscia RGB classica (5577)"
+        case .dimmer: return "Dimmer monocromatico (5577)"
+        case .broadlink: return "Magic Home / BroadLink (UDP 80)"
         }
     }
 }
@@ -277,6 +279,27 @@ struct Luce: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
+extension Luce {
+    /// RGB (0...1) che simula un bianco alla temperatura data su LED solo-RGB (2700K ambra → 6500K freddo).
+    static func rgbBianco(temperatura: Double) -> (r: Double, g: Double, b: Double) {
+        let t = min(1, max(0, temperatura))
+        if t < 0.4 {
+            let k = t / 0.4
+            return (1.0, 0.58 + 0.24 * k, 0.16 + 0.48 * k)
+        }
+        let k = (t - 0.4) / 0.6
+        return (1.0, 0.82 + 0.16 * k, 0.64 + 0.35 * k)
+    }
+
+    /// Tonalità e saturazione (0...1) del bianco simulato, per strisce che hanno solo il colore.
+    var hsBiancoSimulato: (h: Double, s: Double) {
+        let c = Luce.rgbBianco(temperatura: temperatura)
+        let delta = 1.0 - c.b
+        if delta < 0.001 { return (0, 0) }
+        return (min(1, max(0, ((c.g - c.b) / delta) / 6.0)), delta)
+    }
+}
+
 enum RegioneTuya: String, Codable, CaseIterable, Identifiable, Sendable {
     case eu = "https://openapi.tuyaeu.com"
     case euOvest = "https://openapi-weaz.tuyaeu.com"
@@ -331,6 +354,93 @@ struct EffettoLuce: Identifiable, Hashable, Sendable {
     static func colore(perCodice codice: Int) -> Color {
         let hex = tutti.first(where: { $0.codice == codice })?.hex ?? "#AF52DE"
         return Color(esadecimale: hex)
+    }
+
+    /// Costruisce il payload Base64 per DP 51 (`dreamlight_scene_mode`) delle strisce SPI Tuya.
+    static func payloadDreamlight(codiceEffetto: Int, velocita: Double, luminosita: Double) -> String {
+        let speed = UInt8(max(1, min(100, Int((velocita * 95.0 + 5.0).rounded()))))
+        let bright = UInt8(max(10, min(100, Int((luminosita * 100.0).rounded()))))
+        let stile: UInt8
+        let palette: [(UInt16, UInt8)]
+
+        switch codiceEffetto {
+        case 0x25: // Aurora 7 colori -> Rainbow
+            stile = 0x0B
+            palette = [(0, 100), (60, 100), (120, 100), (180, 100), (240, 100), (300, 100)]
+        case 0x26: // Respiro Ambra -> Gradient caldo
+            stile = 0x01
+            palette = [(12, 95), (28, 95), (42, 90)]
+        case 0x2A: // Respiro Oceano -> Flowing blu/ciano
+            stile = 0x0A
+            palette = [(190, 95), (215, 95), (245, 90)]
+        case 0x27: // Foresta Viva -> Gradient verde
+            stile = 0x01
+            palette = [(110, 95), (145, 90), (170, 85)]
+        case 0x2B: // Tramonto Neon -> Flowing rosa/arancio/viola
+            stile = 0x0A
+            palette = [(340, 95), (15, 95), (280, 90)]
+        case 0x29: // Luce Solare -> Gradient oro/ambra
+            stile = 0x01
+            palette = [(45, 95), (30, 85), (55, 70)]
+        case 0x38: // Festa Dinamica -> Jump rapido multicolore
+            stile = 0x10
+            palette = [(0, 100), (120, 100), (240, 100), (60, 100), (300, 100)]
+        case 0x2C: // Ghiaccio Artico -> Chase ciano/blu/bianco
+            stile = 0x08
+            palette = [(195, 85), (215, 95), (200, 30)]
+        default:
+            stile = 0x01
+            palette = [(280, 90), (200, 90), (340, 90)]
+        }
+
+        var bytes: [UInt8] = [0x01, 0xC9, stile, speed, bright, 0x00]
+        for (h, s) in palette {
+            let hue = min(359, h)
+            bytes.append(UInt8((hue >> 8) & 0xFF))
+            bytes.append(UInt8(hue & 0xFF))
+            bytes.append(min(100, s))
+        }
+        return Data(bytes).base64EncodedString()
+    }
+
+    /// Costruisce la stringa JSON per `scene_data_v2` (DP 25) delle lampadine Tuya v2 (es. ANTELA Smart Bulb).
+    static func scenaTuyaV2(codiceEffetto: Int, luminosita: Double) -> String {
+        let v = max(50, min(1000, Int((luminosita * 1000.0).rounded())))
+        let num = max(1, min(8, (tutti.firstIndex(where: { $0.codice == codiceEffetto }) ?? 0) + 1))
+        let jump = (codiceEffetto == 0x38)
+        let mode = jump ? "jump" : "gradient"
+        let durata = jump ? 35 : 70
+        let tonalita: [Int]
+        switch codiceEffetto {
+        case 0x25: tonalita = [0, 120, 240, 300]
+        case 0x26: tonalita = [15, 32, 8]
+        case 0x2A: tonalita = [195, 225, 255]
+        case 0x27: tonalita = [110, 150, 85]
+        case 0x2B: tonalita = [340, 20, 285]
+        case 0x29: tonalita = [45, 30, 55]
+        case 0x38: tonalita = [0, 90, 180, 270]
+        case 0x2C: tonalita = [195, 210, 180]
+        default: tonalita = [0, 120, 240]
+        }
+
+        let units: [[String: Any]] = tonalita.map { h in
+            [
+                "bright": 0,
+                "h": h,
+                "s": 1000,
+                "temperature": 0,
+                "unit_change_mode": mode,
+                "unit_gradient_duration": durata,
+                "unit_switch_duration": durata,
+                "v": v,
+            ]
+        }
+        let obj: [String: Any] = ["scene_num": num, "scene_units": units]
+        if let d = try? JSONSerialization.data(withJSONObject: obj),
+           let s = String(data: d, encoding: .utf8) {
+            return s
+        }
+        return "{\"scene_num\":1,\"scene_units\":[{\"bright\":0,\"h\":240,\"s\":1000,\"temperature\":0,\"unit_change_mode\":\"gradient\",\"unit_gradient_duration\":70,\"unit_switch_duration\":70,\"v\":\(v)}]}"
     }
 }
 

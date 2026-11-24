@@ -171,8 +171,7 @@ struct BarraTattileVetro: View {
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 18))
-                .gesture(
-                    DragGesture(minimumDistance: 0)
+                .highPriorityGesture(DragGesture(minimumDistance: 0)
                         .onChanged { g in
                             let raw = Double(min(1, max(0, g.location.x / larghezza)))
                             let nuovo = minimo + raw * (1.0 - minimo)
@@ -241,8 +240,7 @@ struct SelettoreBiancoVetro: View {
                         .shadow(color: .black.opacity(0.28), radius: 5, y: 2)
                         .offset(x: min(max(3, x - 15), larghezza - 33))
                 }
-                .gesture(
-                    DragGesture(minimumDistance: 0)
+                .highPriorityGesture(DragGesture(minimumDistance: 0)
                         .onChanged { g in
                             temperatura = Double(min(1, max(0, g.location.x / larghezza)))
                             alCambio(false)
@@ -305,8 +303,8 @@ struct DiscoColoreVetro: View {
                 let raggio = lato / 2.0
                 let angolo = tonalita * 2.0 * .pi
                 let dist = saturazione * (raggio - 16)
-                let px = raggio + CGFloat(cos(angolo) * dist)
-                let py = raggio + CGFloat(sin(angolo) * dist)
+                let px = geo.size.width / 2.0 + CGFloat(cos(angolo) * dist)
+                let py = geo.size.height / 2.0 + CGFloat(sin(angolo) * dist)
 
                 ZStack {
                     Circle()
@@ -337,15 +335,14 @@ struct DiscoColoreVetro: View {
                         .overlay(Circle().stroke(.white, lineWidth: 3))
                         .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
                         .frame(width: 30, height: 30)
-                        .position(x: px + (geo.size.width - lato) / 2.0, y: py)
+                        .position(x: px, y: py)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 0)
+                .highPriorityGesture(DragGesture(minimumDistance: 0)
                         .onChanged { g in
                             let cx = geo.size.width / 2.0
-                            let cy = lato / 2.0
+                            let cy = geo.size.height / 2.0
                             let dx = Double(g.location.x - cx)
                             let dy = Double(g.location.y - cy)
                             var ang = atan2(dy, dx) / (2.0 * .pi)
@@ -387,6 +384,7 @@ struct DiscoColoreVetro: View {
 
 /// Tessera Liquid Glass per una singola lampadina o striscia LED, con accensione immediata e regolazione rapida luminosità.
 struct TesseraLuceVetro: View {
+    @State private var confermaElimina = false
     @EnvironmentObject private var gestore: GestoreLuci
     let luce: Luce
 
@@ -454,8 +452,7 @@ struct TesseraLuceVetro: View {
                             )
                             .frame(width: max(18, w * CGFloat(luce.luminosita)))
                     }
-                    .gesture(
-                        DragGesture(minimumDistance: 4)
+                    .highPriorityGesture(DragGesture(minimumDistance: 4)
                             .onChanged { g in
                                 var mod = luce
                                 mod.luminosita = Double(min(1, max(0.02, g.location.x / w)))
@@ -474,6 +471,21 @@ struct TesseraLuceVetro: View {
         }
         .padding(16)
         .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .contextMenu {
+            Button { gestore.commuta(luce.id) } label: {
+                Label(luce.accensione ? "Spegni" : "Accendi", systemImage: "power")
+            }
+            Button { gestore.luceApertaID = luce.id } label: {
+                Label("Apri dettagli", systemImage: "slider.horizontal.3")
+            }
+            Button(role: .destructive) { confermaElimina = true } label: {
+                Label("Elimina dispositivo", systemImage: "trash")
+            }
+        }
+        .confirmationDialog("Eliminare \(luce.nome)?", isPresented: $confermaElimina, titleVisibility: .visible) {
+            Button("Elimina dispositivo", role: .destructive) { gestore.elimina(luce.id) }
+            Button("Annulla", role: .cancel) {}
+        }
         .onTapGesture {
             toccoLeggero()
             gestore.luceApertaID = luce.id

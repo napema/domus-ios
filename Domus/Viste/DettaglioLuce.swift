@@ -37,7 +37,7 @@ struct DettaglioLuce: View {
                                 valore: Binding(
                                     get: { luce.luminosita },
                                     set: { nuovo in
-                                        var m = luce
+                                        var m = gestore.luce(id: luce.id) ?? luce
                                         m.accensione = true
                                         m.luminosita = nuovo
                                         gestore.aggiorna(m, immediato: false)
@@ -45,7 +45,9 @@ struct DettaglioLuce: View {
                                 ),
                                 coloreBarra: luce.accensione ? colore : .accentoDomus,
                                 alRilascio: {
-                                    gestore.aggiorna(luce, immediato: true)
+                                    if let aggiornata = gestore.luce(id: luce.id) {
+                                        gestore.aggiorna(aggiornata, immediato: true)
+                                    }
                                 }
                             )
                         }
@@ -163,7 +165,7 @@ struct DettaglioLuce: View {
                     temperatura: Binding(
                         get: { luce.temperatura },
                         set: { nuovo in
-                            var m = luce
+                            var m = gestore.luce(id: luce.id) ?? luce
                             m.accensione = true
                             m.modo = .bianco
                             m.temperatura = nuovo
@@ -184,7 +186,7 @@ struct DettaglioLuce: View {
                     tonalita: Binding(
                         get: { luce.tonalita },
                         set: { h in
-                            var m = luce
+                            var m = gestore.luce(id: luce.id) ?? luce
                             m.accensione = true
                             m.modo = .colore
                             m.tonalita = h
@@ -194,7 +196,7 @@ struct DettaglioLuce: View {
                     saturazione: Binding(
                         get: { luce.saturazione },
                         set: { s in
-                            var m = luce
+                            var m = gestore.luce(id: luce.id) ?? luce
                             m.accensione = true
                             m.modo = .colore
                             m.saturazione = s
@@ -244,14 +246,14 @@ struct DettaglioLuce: View {
                     }
                 }
 
-                if luce.marca == .magicHome {
+                if luce.marca == .magicHome || luce.schemaTuya == .lucePixel {
                     BarraTattileVetro(
                         titolo: "Velocità transizione",
                         simbolo: "hare.fill",
                         valore: Binding(
                             get: { luce.velocitaEffetto },
                             set: { v in
-                                var m = luce
+                                var m = gestore.luce(id: luce.id) ?? luce
                                 m.velocitaEffetto = v
                                 gestore.aggiorna(m, immediato: false)
                             }
@@ -286,7 +288,7 @@ struct DettaglioLuce: View {
 
                     Picker("Tipo dispositivo", selection: Binding(
                         get: { luce.tipo },
-                        set: { nuovo in var m = luce; m.tipo = nuovo; gestore.aggiungiOModifica(m) }
+                        set: { nuovo in var m = gestore.luce(id: luce.id) ?? luce; m.tipo = nuovo; gestore.aggiungiOModifica(m) }
                     )) {
                         ForEach(TipoLuce.allCases) { t in
                             Text(t.etichetta).tag(t)
@@ -295,7 +297,7 @@ struct DettaglioLuce: View {
 
                     Toggle("Mostra nei widget rapidi", isOn: Binding(
                         get: { luce.preferitaWidget },
-                        set: { v in var m = luce; m.preferitaWidget = v; gestore.aggiungiOModifica(m) }
+                        set: { v in var m = gestore.luce(id: luce.id) ?? luce; m.preferitaWidget = v; gestore.aggiungiOModifica(m) }
                     ))
                     .font(.subheadline)
 
@@ -309,7 +311,7 @@ struct DettaglioLuce: View {
                     if luce.marca == .magicHome {
                         Picker("Protocollo Magic Home", selection: Binding(
                             get: { luce.varianteMagic },
-                            set: { v in var m = luce; m.varianteMagic = v; gestore.aggiungiOModifica(m) }
+                            set: { v in var m = gestore.luce(id: luce.id) ?? luce; m.varianteMagic = v; gestore.aggiungiOModifica(m) }
                         )) {
                             ForEach(VarianteMagicHome.allCases) { v in
                                 Text(v.descrizione).tag(v)
@@ -325,7 +327,7 @@ struct DettaglioLuce: View {
                         }
                         Picker("Versione LAN Tuya", selection: Binding(
                             get: { luce.versioneProtocollo },
-                            set: { v in var m = luce; m.versioneProtocollo = v; gestore.aggiungiOModifica(m) }
+                            set: { v in var m = gestore.luce(id: luce.id) ?? luce; m.versioneProtocollo = v; gestore.aggiungiOModifica(m) }
                         )) {
                             Text("3.3").tag("3.3")
                             Text("3.4").tag("3.4")
@@ -335,7 +337,7 @@ struct DettaglioLuce: View {
 
                         Picker("Schema DP", selection: Binding(
                             get: { luce.schemaTuya },
-                            set: { s in var m = luce; m.schemaTuya = s; gestore.aggiungiOModifica(m) }
+                            set: { s in var m = gestore.luce(id: luce.id) ?? luce; m.schemaTuya = s; gestore.aggiungiOModifica(m) }
                         )) {
                             ForEach(SchemaTuya.allCases) { s in
                                 Text(s.descrizione).tag(s)

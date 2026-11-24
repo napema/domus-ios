@@ -23,12 +23,20 @@ enum ProtocolloTuyaLocale {
         case .lucePixel:
             var dps: [String: Any] = ["20": luce.accensione]
             guard luce.accensione else { return dps }
-            dps["21"] = "colour"
-            let h = Int((min(1, max(0, luce.tonalita)) * 360.0).rounded()) % 360
-            let bianco = luce.modo == .bianco
-            let s = bianco ? 0 : Int((min(1, max(0, luce.saturazione)) * 1000.0).rounded())
-            let v = Int((max(0.01, min(1, luce.luminosita)) * 1000.0).rounded())
-            dps["24"] = String(format: "%04x%04x%04x", h, s, v)
+            if luce.modo == .effetto {
+                dps["21"] = "scene"
+                dps["51"] = EffettoLuce.payloadDreamlight(
+                    codiceEffetto: luce.effetto,
+                    velocita: luce.velocitaEffetto,
+                    luminosita: luce.luminosita
+                )
+            } else {
+                dps["21"] = "colour"
+                let h = luce.modo == .bianco ? Int((luce.hsBiancoSimulato.h * 360.0).rounded()) % 360 : Int((min(1, max(0, luce.tonalita)) * 360.0).rounded()) % 360
+                let s = luce.modo == .bianco ? Int((luce.hsBiancoSimulato.s * 1000.0).rounded()) : Int((min(1, max(0, luce.saturazione)) * 1000.0).rounded())
+                let v = Int((max(0.01, min(1, luce.luminosita)) * 1000.0).rounded())
+                dps["24"] = String(format: "%04x%04x%04x", h, s, v)
+            }
             return dps
         case .luceV2:
             var dps: [String: Any] = ["20": luce.accensione]
@@ -38,7 +46,10 @@ enum ProtocolloTuyaLocale {
                 dps["21"] = "white"
                 dps["22"] = Int((10.0 + min(1, max(0, luce.luminosita)) * 990.0).rounded())
                 dps["23"] = Int((min(1, max(0, luce.temperatura)) * 1000.0).rounded())
-            case .colore, .effetto:
+            case .effetto:
+                dps["21"] = "scene"
+                dps["25"] = EffettoLuce.scenaTuyaV2(codiceEffetto: luce.effetto, luminosita: luce.luminosita)
+            case .colore:
                 dps["21"] = "colour"
                 let h = Int((min(1, max(0, luce.tonalita)) * 360.0).rounded()) % 360
                 let s = Int((min(1, max(0, luce.saturazione)) * 1000.0).rounded())
@@ -382,7 +393,7 @@ enum ProtocolloTuyaLocale {
     private static func sessioneTCP<R>(
         ip: String,
         porta: Int,
-        timeout: TimeInterval = 1.8,
+        timeout: TimeInterval = 0.9,
         scambio: (CanaleTCP) async -> R?
     ) async -> R? {
         guard let nwPorta = NWEndpoint.Port(rawValue: UInt16(clamping: porta)) else { return nil }
@@ -423,7 +434,7 @@ final class CanaleTCP: @unchecked Sendable {
         }
     }
 
-    func inviaERicevi(_ dati: Data, minByte: Int, timeout: TimeInterval = 1.2) async -> Data? {
+    func inviaERicevi(_ dati: Data, minByte: Int, timeout: TimeInterval = 0.85) async -> Data? {
         await withCheckedContinuation { cont in
             let guardia = ScatolaCompletamento<Data?>()
             let fine: (Data?) -> Void = { d in
@@ -472,7 +483,12 @@ enum ControlloRapido {
     static func applica(_ luce: Luce, credenzialiTuya: CredenzialiTuya) async -> (riuscito: Bool, viaLocale: Bool, versioneTuya: String?) {
         switch luce.marca {
         case .magicHome:
-            let ok = await ProtocolloMagicHome.applica(luce)
+            let ok: Bool
+            if luce.varianteMagic == .broadlink {
+                ok = await ProtocolloBroadLink.applica(luce)
+            } else {
+                ok = await ProtocolloMagicHome.applica(luce)
+            }
             return (ok, ok, nil)
         case .tuya:
             let (okLocale, ver) = await ProtocolloTuyaLocale.applica(luce)
