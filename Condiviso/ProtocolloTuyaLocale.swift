@@ -20,6 +20,16 @@ enum ProtocolloTuyaLocale {
         switch luce.schemaTuya {
         case .soloInterruttore:
             return ["1": luce.accensione]
+        case .lucePixel:
+            var dps: [String: Any] = ["20": luce.accensione]
+            guard luce.accensione else { return dps }
+            dps["21"] = "colour"
+            let h = Int((min(1, max(0, luce.tonalita)) * 360.0).rounded()) % 360
+            let bianco = luce.modo == .bianco
+            let s = bianco ? 0 : Int((min(1, max(0, luce.saturazione)) * 1000.0).rounded())
+            let v = Int((max(0.01, min(1, luce.luminosita)) * 1000.0).rounded())
+            dps["24"] = String(format: "%04x%04x%04x", h, s, v)
+            return dps
         case .luceV2:
             var dps: [String: Any] = ["20": luce.accensione]
             guard luce.accensione else { return dps }

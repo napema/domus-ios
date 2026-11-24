@@ -279,6 +279,8 @@ actor ProtocolloTuyaCloud {
         let codici = Set(stati.compactMap { $0["code"] as? String })
         if codici.contains("bright_value_v2") || codici.contains("colour_data_v2") || codici.contains("temp_value_v2") {
             luce.schemaTuya = .luceV2
+        } else if codici.contains("colour_data") && !codici.contains("bright_value") {
+            luce.schemaTuya = .lucePixel
         } else if codici.contains("bright_value") || codici.contains("colour_data") || codici.contains("temp_value") {
             luce.schemaTuya = .luceV1
         } else if codici.contains("switch_1") && !codici.contains("switch_led") {
@@ -324,7 +326,11 @@ actor ProtocolloTuyaCloud {
                     leggiOggettoHSV(ogg, scala: 1000.0, a: &luce)
                 }
             case "colour_data":
-                if let s = valore as? String, s.count == 12 {
+                if let s = valore as? String, s.hasPrefix("{"),
+                   let d = s.data(using: .utf8),
+                   let ogg = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                    leggiOggettoHSV(ogg, scala: luce.schemaTuya == .lucePixel ? 1000.0 : 255.0, a: &luce)
+                } else if let s = valore as? String, s.count == 12 {
                     // Formato esadecimale HHHHSSSSVVVV (0000..0168, 0000..03e8, 0000..03e8)
                     let h = Int(s.prefix(4), radix: 16) ?? 0
                     let sat = Int(s.dropFirst(4).prefix(4), radix: 16) ?? 1000
@@ -360,7 +366,13 @@ actor ProtocolloTuyaCloud {
             ["code": luce.codiceSwitchTuya, "value": luce.accensione]
         ]
 
-        if luce.accensione && luce.schemaTuya != .soloInterruttore {
+        if luce.accensione && luce.schemaTuya == .lucePixel {
+            let h = Int((min(1, max(0, luce.tonalita)) * 360.0).rounded()) % 360
+            let s = luce.modo == .bianco ? 0 : Int((min(1, max(0, luce.saturazione)) * 1000.0).rounded())
+            let v = Int((max(0.01, min(1, luce.luminosita)) * 1000.0).rounded())
+            comandi.append(["code": "work_mode", "value": "colour"])
+            comandi.append(["code": "colour_data", "value": ["h": h, "s": s, "v": v]])
+        } else if luce.accensione && luce.schemaTuya != .soloInterruttore {
             switch luce.modo {
             case .bianco:
                 comandi.append(["code": "work_mode", "value": "white"])

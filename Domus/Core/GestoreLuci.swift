@@ -409,7 +409,20 @@ final class GestoreLuci: ObservableObject {
             return dirette.count
         }
         // Supporto diretto anche al formato `devices.json` di TinyTuya (`[{"name":...,"id":...,"key":...,"ip":...,"version":...}]`)
-        guard let lista = try? JSONSerialization.jsonObject(with: dati) as? [[String: Any]] else { return 0 }
+        // Formato «setup»: {"tuya":{accessId,accessSecret,regione,uid},"devices":[...]}
+        var elenco: [[String: Any]]? = nil
+        if let radice = try? JSONSerialization.jsonObject(with: dati) as? [String: Any] {
+            if let t = radice["tuya"] as? [String: Any] {
+                var c = CredenzialiTuya()
+                c.accessId = t["accessId"] as? String ?? ""
+                c.accessSecret = t["accessSecret"] as? String ?? ""
+                c.uidUtente = t["uid"] as? String ?? ""
+                c.regione = RegioneTuya(rawValue: t["regione"] as? String ?? "") ?? .eu
+                salvaCredenziali(c)
+            }
+            elenco = radice["devices"] as? [[String: Any]]
+        }
+        guard let lista = elenco ?? (try? JSONSerialization.jsonObject(with: dati) as? [[String: Any]]) else { return 0 }
         var cont = 0
         for voce in lista {
             guard let devId = (voce["id"] as? String) ?? (voce["gwId"] as? String), !devId.isEmpty else { continue }
@@ -419,10 +432,10 @@ final class GestoreLuci: ObservableObject {
             let ver = (voce["version"] as? String) ?? "3.3"
             let cat = (voce["category"] as? String ?? "").lowercased()
             let tipo: TipoLuce = (cat == "dd" || cat == "dc" || nome.lowercased().contains("strip") || nome.lowercased().contains("striscia") || nome.lowercased().contains("led")) ? .striscia : .lampadina
-            let nuova = Luce(
+            var nuova = Luce(
                 id: "tuya-\(devId)",
                 nome: nome,
-                stanza: "Casa",
+                stanza: (voce["stanza"] as? String) ?? "Casa",
                 marca: .tuya,
                 tipo: tipo,
                 ip: (ip?.isEmpty == false) ? ip : nil,
@@ -432,6 +445,7 @@ final class GestoreLuci: ObservableObject {
                 versioneProtocollo: ver,
                 viaLocale: ip?.isEmpty == false
             )
+            if let s = voce["schema"] as? String, let sch = SchemaTuya(rawValue: s) { nuova.schemaTuya = sch }
             aggiungiOModifica(nuova)
             cont += 1
         }

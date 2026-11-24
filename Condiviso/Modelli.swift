@@ -135,11 +135,13 @@ enum SchemaTuya: String, Codable, CaseIterable, Identifiable, Sendable {
     case luceV2 = "v2"
     case luceV1 = "v1"
     case soloInterruttore = "switch"
+    case lucePixel = "pixel"
 
     var id: String { rawValue }
 
     var descrizione: String {
         switch self {
+        case .lucePixel: return "Striscia colore (DP 20–24 · 1000)"
         case .luceV2: return "Luce Tuya v2 (DP 20–25 · 1000)"
         case .luceV1: return "Luce Tuya v1 (DP 1–5 · 255)"
         case .soloInterruttore: return "Interruttore LED (DP 1)"
