@@ -139,7 +139,7 @@ enum ProtocolloBroadLink {
                 payload["bulb_colormode"] = 1
                 payload["colortemp"] = max(2700, min(6500, luce.kelvin))
             case .colore, .effetto:
-                let c = luce.rgb
+                let c = luce.rgbPuro
                 payload["bulb_colormode"] = 0
                 payload["hue"] = Int((min(1, max(0, luce.tonalita)) * 360.0).rounded()) % 360
                 payload["saturation"] = max(0, min(100, Int((luce.saturazione * 100.0).rounded())))

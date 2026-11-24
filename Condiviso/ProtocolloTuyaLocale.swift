@@ -12,6 +12,38 @@ struct AnnuncioUDPTuya: Sendable, Hashable {
 /// Motore nativo per il controllo diretto in rete locale (TCP porta 6668) dei dispositivi Tuya:
 /// supporta i protocolli **3.3** (`0x55AA` AES-ECB statico), **3.4** (`0x55AA` handshake 3-way HMAC-SHA256)
 /// e **3.5** (`0x6699` handshake 3-way + AES-128-GCM con AAD).
+private actor CodaTuyaLocale {
+    static let condivisa = CodaTuyaLocale()
+    private var occupati: Set<String> = []
+    private var inAttesa: [String: [CheckedContinuation<Void, Never>]] = [:]
+
+    func acquisisci(ip: String) async {
+        if !occupati.contains(ip) {
+            occupati.insert(ip)
+            return
+        }
+        await withCheckedContinuation { cont in
+            inAttesa[ip, default: []].append(cont)
+        }
+    }
+
+    func rilascia(ip: String) {
+        if var lista = inAttesa[ip], !lista.isEmpty {
+            let prossima = lista.removeFirst()
+            inAttesa[ip] = lista
+            prossima.resume()
+        } else {
+            inAttesa[ip] = nil
+            occupati.remove(ip)
+        }
+    }
+}
+
+private enum EsitoSessioneTCP<R> {
+    case risultato(R?)
+    case tcpNonConnesso
+}
+
 enum ProtocolloTuyaLocale {
     static let portaControllo: Int = 6668
 
@@ -78,7 +110,7 @@ enum ProtocolloTuyaLocale {
     }
 
     /// Invia i DPS alla lampadina o striscia Tuya sulla rete Wi-Fi locale (porta 6668).
-    /// Se la versione salvata non risponde, prova in cascata 3.5 → 3.4 → 3.3 e restituisce la versione funzionante.
+    /// Serializza per IP così il chip singolo-socket non si satura; se TCP non connette esce subito verso Cloud.
     static func applica(_ luce: Luce) async -> (riuscito: Bool, versioneRilevata: String?) {
         guard let ip = luce.ip, !ip.isEmpty,
               let devId = luce.tuyaId, !devId.isEmpty,
@@ -88,20 +120,34 @@ enum ProtocolloTuyaLocale {
         let chiave = Data(keyStr.utf8)
         let dps = costruisciDPS(per: luce)
 
+        await CodaTuyaLocale.condivisa.acquisisci(ip: ip)
+        var esitoFinale: (Bool, String?) = (false, nil)
         let ordine = [luce.versioneProtocollo] + ["3.5", "3.4", "3.3"].filter { $0 != luce.versioneProtocollo }
+
         for versione in ordine {
-            let ok: Bool
+            let esito: EsitoSessioneTCP<Bool>
             switch versione {
             case "3.5":
-                ok = await inviaV35(ip: ip, porta: luce.porta, devId: devId, localKey: chiave, dps: dps)
+                esito = await inviaV35(ip: ip, porta: luce.porta, devId: devId, localKey: chiave, dps: dps)
             case "3.4":
-                ok = await inviaV34(ip: ip, porta: luce.porta, devId: devId, localKey: chiave, dps: dps)
+                esito = await inviaV34(ip: ip, porta: luce.porta, devId: devId, localKey: chiave, dps: dps)
             default:
-                ok = await inviaV33(ip: ip, porta: luce.porta, devId: devId, localKey: chiave, dps: dps)
+                esito = await inviaV33(ip: ip, porta: luce.porta, devId: devId, localKey: chiave, dps: dps)
             }
-            if ok { return (true, versione) }
+            switch esito {
+            case .risultato(true):
+                esitoFinale = (true, versione)
+            case .tcpNonConnesso:
+                esitoFinale = (false, nil)
+            case .risultato(false), .risultato(nil):
+                continue
+            }
+            break
         }
-        return (false, nil)
+
+        try? await Task.sleep(for: .milliseconds(65))
+        await CodaTuyaLocale.condivisa.rilascia(ip: ip)
+        return esitoFinale
     }
 
     /// Verifica se un IP sulla porta 6668 appartiene a uno specifico dispositivo Tuya provando l'handshake/query con la sua `local_key`.
@@ -116,21 +162,21 @@ enum ProtocolloTuyaLocale {
 
     // MARK: - Protocollo 3.3 (0x000055AA, AES-128-ECB statico, CRC32)
 
-    private static func inviaV33(ip: String, porta: Int, devId: String, localKey: Data, dps: [String: Any]) async -> Bool {
+    private static func inviaV33(ip: String, porta: Int, devId: String, localKey: Data, dps: [String: Any]) async -> EsitoSessioneTCP<Bool> {
         let t = Int(Date().timeIntervalSince1970)
         let oggetto: [String: Any] = ["devId": devId, "uid": devId, "t": "\(t)", "dps": dps]
         guard let json = try? JSONSerialization.data(withJSONObject: oggetto),
               let cifrato = CrittografiaTuya.aesECBCifra(json, chiave: localKey, padding: true) else {
-            return false
+            return .risultato(false)
         }
         var payload = Data("3.3".utf8)
         payload.append(Data(repeating: 0, count: 12))
         payload.append(cifrato)
         let frame = impacchetta55AA(sequenza: 1, comando: 0x07, payload: payload, chiaveHMAC: nil)
-        guard let risp = await sessioneTCP(ip: ip, porta: porta, scambio: { conn in
-            await conn.inviaERicevi(frame, minByte: 20)
-        }) else { return false }
-        return risp.starts(with: [0x00, 0x00, 0x55, 0xAA])
+        return await sessioneTCPStato(ip: ip, porta: porta) { conn in
+            guard let risp = await conn.inviaERicevi(frame, minByte: 20) else { return false }
+            return risp.starts(with: [0x00, 0x00, 0x55, 0xAA])
+        }
     }
 
     private static func sondaV33(ip: String, devId: String, localKey: Data) async -> Bool {
@@ -158,21 +204,21 @@ enum ProtocolloTuyaLocale {
 
     // MARK: - Protocollo 3.4 (0x000055AA, Handshake 3-way 0x03/0x04/0x05 + HMAC-SHA256)
 
-    private static func inviaV34(ip: String, porta: Int, devId: String, localKey: Data, dps: [String: Any]) async -> Bool {
+    private static func inviaV34(ip: String, porta: Int, devId: String, localKey: Data, dps: [String: Any]) async -> EsitoSessioneTCP<Bool> {
         let t = Int(Date().timeIntervalSince1970)
         let oggetto: [String: Any] = ["protocol": 5, "t": t, "data": ["dps": dps]]
-        guard let json = try? JSONSerialization.data(withJSONObject: oggetto) else { return false }
+        guard let json = try? JSONSerialization.data(withJSONObject: oggetto) else { return .risultato(false) }
 
-        return await sessioneTCP(ip: ip, porta: porta) { conn -> Bool? in
-            guard let chiaveSessione = await negoziaV34(conn: conn, localKey: localKey) else { return nil }
+        return await sessioneTCPStato(ip: ip, porta: porta) { conn -> Bool? in
+            guard let chiaveSessione = await negoziaV34(conn: conn, localKey: localKey) else { return false }
             var chiaro = Data("3.4".utf8)
             chiaro.append(Data(repeating: 0, count: 12))
             chiaro.append(json)
-            guard let cifrato = CrittografiaTuya.aesECBCifra(chiaro, chiave: chiaveSessione, padding: true) else { return nil }
+            guard let cifrato = CrittografiaTuya.aesECBCifra(chiaro, chiave: chiaveSessione, padding: true) else { return false }
             let pacchetto = impacchetta55AA(sequenza: 3, comando: 0x0D, payload: cifrato, chiaveHMAC: chiaveSessione)
-            guard let risp = await conn.inviaERicevi(pacchetto, minByte: 20) else { return nil }
+            guard let risp = await conn.inviaERicevi(pacchetto, minByte: 20) else { return false }
             return risp.starts(with: [0x00, 0x00, 0x55, 0xAA])
-        } ?? false
+        }
     }
 
     private static func sondaV34(ip: String, localKey: Data) async -> Bool {
@@ -216,20 +262,20 @@ enum ProtocolloTuyaLocale {
 
     // MARK: - Protocollo 3.5 (0x00006699, Handshake 3-way + AES-128-GCM con AAD)
 
-    private static func inviaV35(ip: String, porta: Int, devId: String, localKey: Data, dps: [String: Any]) async -> Bool {
+    private static func inviaV35(ip: String, porta: Int, devId: String, localKey: Data, dps: [String: Any]) async -> EsitoSessioneTCP<Bool> {
         let t = Int(Date().timeIntervalSince1970)
         let oggetto: [String: Any] = ["protocol": 5, "t": t, "data": ["dps": dps]]
-        guard let json = try? JSONSerialization.data(withJSONObject: oggetto) else { return false }
+        guard let json = try? JSONSerialization.data(withJSONObject: oggetto) else { return .risultato(false) }
 
-        return await sessioneTCP(ip: ip, porta: porta) { conn -> Bool? in
-            guard let chiaveSessione = await negoziaV35(conn: conn, localKey: localKey) else { return nil }
+        return await sessioneTCPStato(ip: ip, porta: porta) { conn -> Bool? in
+            guard let chiaveSessione = await negoziaV35(conn: conn, localKey: localKey) else { return false }
             var chiaro = Data("3.5".utf8)
             chiaro.append(Data(repeating: 0, count: 12))
             chiaro.append(json)
-            guard let fComando = impacchetta6699(sequenza: 3, comando: 0x0D, payload: chiaro, chiave: chiaveSessione) else { return nil }
-            guard let risp = await conn.inviaERicevi(fComando, minByte: 22) else { return nil }
+            guard let fComando = impacchetta6699(sequenza: 3, comando: 0x0D, payload: chiaro, chiave: chiaveSessione) else { return false }
+            guard let risp = await conn.inviaERicevi(fComando, minByte: 22) else { return false }
             return risp.starts(with: [0x00, 0x00, 0x66, 0x99])
-        } ?? false
+        }
     }
 
     private static func sondaV35(ip: String, localKey: Data) async -> Bool {
@@ -396,14 +442,26 @@ enum ProtocolloTuyaLocale {
         timeout: TimeInterval = 0.9,
         scambio: (CanaleTCP) async -> R?
     ) async -> R? {
-        guard let nwPorta = NWEndpoint.Port(rawValue: UInt16(clamping: porta)) else { return nil }
+        switch await sessioneTCPStato(ip: ip, porta: porta, timeout: timeout, scambio: scambio) {
+        case .risultato(let r): return r
+        case .tcpNonConnesso: return nil
+        }
+    }
+
+    private static func sessioneTCPStato<R>(
+        ip: String,
+        porta: Int,
+        timeout: TimeInterval = 0.9,
+        scambio: (CanaleTCP) async -> R?
+    ) async -> EsitoSessioneTCP<R> {
+        guard let nwPorta = NWEndpoint.Port(rawValue: UInt16(clamping: porta)) else { return .tcpNonConnesso }
         let canale = CanaleTCP(ip: ip, porta: nwPorta)
         guard await canale.apri(timeout: timeout) else {
             canale.chiudi()
-            return nil
+            return .tcpNonConnesso
         }
         defer { canale.chiudi() }
-        return await scambio(canale)
+        return .risultato(await scambio(canale))
     }
 }
 
@@ -416,45 +474,53 @@ final class CanaleTCP: @unchecked Sendable {
     }
 
     func apri(timeout: TimeInterval) async -> Bool {
-        await withCheckedContinuation { cont in
-            let guardia = ScatolaCompletamento<Bool>()
-            let fine: (Bool) -> Void = { ok in
-                guard guardia.completaUnaVolta() else { return }
-                cont.resume(returning: ok)
-            }
-            coda.asyncAfter(deadline: .now() + timeout) { fine(false) }
-            conn.stateUpdateHandler = { stato in
-                switch stato {
-                case .ready: fine(true)
-                case .failed, .cancelled: fine(false)
-                default: break
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { cont in
+                let guardia = ScatolaCompletamento<Bool>()
+                let fine: (Bool) -> Void = { ok in
+                    guard guardia.completaUnaVolta() else { return }
+                    cont.resume(returning: ok)
                 }
+                coda.asyncAfter(deadline: .now() + timeout) { fine(false) }
+                conn.stateUpdateHandler = { stato in
+                    switch stato {
+                    case .ready: fine(true)
+                    case .failed, .cancelled: fine(false)
+                    default: break
+                    }
+                }
+                conn.start(queue: coda)
             }
-            conn.start(queue: coda)
+        } onCancel: {
+            self.chiudi()
         }
     }
 
     func inviaERicevi(_ dati: Data, minByte: Int, timeout: TimeInterval = 0.85) async -> Data? {
-        await withCheckedContinuation { cont in
-            let guardia = ScatolaCompletamento<Data?>()
-            let fine: (Data?) -> Void = { d in
-                guard guardia.completaUnaVolta() else { return }
-                cont.resume(returning: d)
-            }
-            coda.asyncAfter(deadline: .now() + timeout) { fine(nil) }
-            conn.send(content: dati, completion: .contentProcessed { err in
-                if err != nil {
-                    fine(nil)
-                    return
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { cont in
+                let guardia = ScatolaCompletamento<Data?>()
+                let fine: (Data?) -> Void = { d in
+                    guard guardia.completaUnaVolta() else { return }
+                    cont.resume(returning: d)
                 }
-                self.conn.receive(minimumIncompleteLength: 1, maximumLength: 2048) { ricevuti, _, _, rErr in
-                    if rErr != nil || (ricevuti?.count ?? 0) < minByte {
+                coda.asyncAfter(deadline: .now() + timeout) { fine(nil) }
+                conn.send(content: dati, completion: .contentProcessed { err in
+                    if err != nil {
                         fine(nil)
-                    } else {
-                        fine(ricevuti)
+                        return
                     }
-                }
-            })
+                    self.conn.receive(minimumIncompleteLength: 1, maximumLength: 2048) { ricevuti, _, _, rErr in
+                        if rErr != nil || (ricevuti?.count ?? 0) < minByte {
+                            fine(nil)
+                        } else {
+                            fine(ricevuti)
+                        }
+                    }
+                })
+            }
+        } onCancel: {
+            self.chiudi()
         }
     }
 

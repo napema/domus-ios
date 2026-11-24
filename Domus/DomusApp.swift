@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import WidgetKit
 
@@ -29,6 +30,7 @@ struct DomusApp: App {
                 if let pendente = LinkDomus.prendiInAttesa() {
                     apriCollegamento(pendente)
                 }
+                gestore.controllaSvegliaProgrammata()
                 Task { await gestore.aggiornaStatiDaRete() }
             case .background:
                 gestore.salva()
@@ -45,6 +47,8 @@ struct DomusApp: App {
         switch url.host() ?? "" {
         case "aggiungi":
             gestore.mostraAggiungi = true
+        case "routine-avvia":
+            gestore.avviaCrescendoSveglia(rapidoDemo: false)
         case "luce":
             if let id = parti.first {
                 gestore.luceApertaID = id
@@ -73,6 +77,11 @@ struct RadiceDomus: View {
                     VistaStrisce()
                 }
             }
+            Tab("Routine", systemImage: "alarm.fill", value: "routine") {
+                NavigationStack {
+                    VistaRoutine()
+                }
+            }
             Tab("Impostazioni", systemImage: "gearshape.fill", value: "impostazioni") {
                 NavigationStack {
                     VistaImpostazioni()
@@ -85,6 +94,9 @@ struct RadiceDomus: View {
             }
         }
         .tabBarMinimizeBehavior(.onScrollDown)
+        .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { _ in
+            gestore.controllaSvegliaProgrammata()
+        }
         .tabViewBottomAccessory(isEnabled: !gestore.luci.isEmpty) {
             BarraStatoRapida(accese: accese, totale: gestore.luci.count) {
                 gestore.impostaTutte(accese: accese == 0)

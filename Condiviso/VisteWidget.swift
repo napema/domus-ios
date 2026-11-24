@@ -79,6 +79,91 @@ struct ApriDomusIntent: AppIntent {
     }
 }
 
+/// Azione di Comandi Rapidi (Apple Shortcuts): esegue il crescendo progressivo delle luci
+/// verso la sveglia anche a schermo spento senza dover aprire Domus.
+struct AvviaCrescendoSvegliaIntent: AppIntent {
+    static var title: LocalizedStringResource = "Avvia crescendo sveglia Domus"
+    static var description = IntentDescription("Accende progressivamente le luci al colore della routine sveglia fino all'80% e poi al 100%.")
+    static var isDiscoverable = true
+
+    @Parameter(title: "Durata rampa (secondi)", default: 180)
+    var durataSecondi: Int
+
+    init() {}
+
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        var luci = ArchivioCondiviso.caricaLuci()
+        guard !luci.isEmpty else {
+            return .result(dialog: IntentDialog("Nessuna luce configurata in Domus."))
+        }
+        let routine = ArchivioCondiviso.caricaRoutineSveglia()
+        let cred = ArchivioCondiviso.caricaCredenzialiTuya()
+        let durata = max(6.0, min(600.0, Double(durataSecondi)))
+        let target80 = max(0.20, min(1.0, routine.livelloSveglia))
+        let target100 = max(target80, min(1.0, routine.livelloDopoMinuto))
+
+        let frazioni = [0.0, 0.35, 0.70, 1.0]
+        let pausaStep = durata / Double(frazioni.count - 1)
+        let attesaFinale = durata >= 60.0 ? 60.0 : 4.0
+
+        func applicaLivello(_ lvl: Double) async {
+            for idx in luci.indices {
+                luci[idx].accensione = true
+                luci[idx].luminosita = lvl
+                if routine.soloBianco {
+                    luci[idx].modo = .bianco
+                    luci[idx].temperatura = routine.temperatura
+                } else {
+                    luci[idx].modo = .colore
+                    luci[idx].tonalita = routine.tonalita
+                    luci[idx].saturazione = routine.saturazione
+                }
+            }
+            ArchivioCondiviso.salvaLuci(luci)
+            let snapshot = luci
+            await withTaskGroup(of: Void.self) { gruppo in
+                for l in snapshot {
+                    gruppo.addTask {
+                        _ = await ControlloRapido.applica(l, credenzialiTuya: cred)
+                    }
+                }
+            }
+        }
+
+        for (i, f) in frazioni.enumerated() {
+            let lvl = 0.10 + (target80 - 0.10) * f
+            await applicaLivello(lvl)
+            let attesa = (i == frazioni.count - 1) ? attesaFinale : pausaStep
+            try? await Task.sleep(for: .seconds(attesa))
+        }
+        await applicaLivello(target100)
+        return .result(dialog: IntentDialog("Crescendo sveglia Domus completato al 100%."))
+    }
+}
+
+/// Azione di Comandi Rapidi: permette di sincronizzare in automatico l'orario della prima sveglia
+/// letta dall'app Orologio Apple dentro Domus.
+struct ImpostaSvegliaDomusIntent: AppIntent {
+    static var title: LocalizedStringResource = "Sincronizza orario sveglia Domus"
+    static var description = IntentDescription("Imposta l'orario della routine sveglia in Domus partendo da una data/ora fornita da Comandi Rapidi.")
+    static var isDiscoverable = true
+
+    @Parameter(title: "Orario sveglia")
+    var orario: Date
+
+    init() {}
+
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: orario)
+        var routine = ArchivioCondiviso.caricaRoutineSveglia()
+        routine.ora = comps.hour ?? routine.ora
+        routine.minuto = comps.minute ?? routine.minuto
+        routine.attiva = true
+        ArchivioCondiviso.salvaRoutineSveglia(routine)
+        return .result(dialog: IntentDialog("Routine sveglia Domus impostata per le \(routine.orarioFormattato)."))
+    }
+}
+
 struct VoceWidgetDomus: TimelineEntry {
     let date: Date
     let luci: [Luce]

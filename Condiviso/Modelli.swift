@@ -209,9 +209,18 @@ struct Luce: Identifiable, Codable, Hashable, Sendable {
 
     /// Componenti RGB (0...255) calcolate da tonalità, saturazione e luminosità.
     var rgb: (r: UInt8, g: UInt8, b: UInt8) {
+        calcolaRGB(luminosita: luminosita)
+    }
+
+    /// Componenti RGB pure a luminosità piena (100%), utili quando il protocollo trasmette separatamente `brightness`.
+    var rgbPuro: (r: UInt8, g: UInt8, b: UInt8) {
+        calcolaRGB(luminosita: 1.0)
+    }
+
+    private func calcolaRGB(luminosita val: Double) -> (r: UInt8, g: UInt8, b: UInt8) {
         let h = min(1, max(0, tonalita))
         let s = min(1, max(0, saturazione))
-        let v = min(1, max(0, luminosita))
+        let v = min(1, max(0, val))
         let i = Int((h * 6.0).rounded(.down))
         let f = h * 6.0 - Double(i)
         let p = v * (1.0 - s)
@@ -329,6 +338,34 @@ struct CredenzialiTuya: Codable, Equatable, Sendable {
     var configurate: Bool {
         !accessId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         !accessSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+struct ColoreSalvato: Identifiable, Codable, Hashable, Sendable {
+    var id: String = UUID().uuidString
+    var tonalita: Double
+    var saturazione: Double
+    var luminosita: Double = 1.0
+
+    var colore: Color {
+        Color(hue: min(1, max(0, tonalita)), saturation: min(1, max(0, saturazione)), brightness: max(0.25, luminosita))
+    }
+}
+
+struct RoutineSveglia: Codable, Equatable, Sendable {
+    var attiva: Bool = false
+    var ora: Int = 6
+    var minuto: Int = 40
+    var minutiPrima: Int = 3
+    var livelloSveglia: Double = 0.80
+    var livelloDopoMinuto: Double = 1.0
+    var tonalita: Double = 0.0
+    var saturazione: Double = 1.0
+    var soloBianco: Bool = false
+    var temperatura: Double = 0.05
+
+    var orarioFormattato: String {
+        String(format: "%02d:%02d", ora, minuto)
     }
 }
 

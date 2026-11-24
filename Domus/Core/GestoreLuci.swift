@@ -2,6 +2,7 @@ import Combine
 import Foundation
 import SwiftUI
 import UIKit
+import UserNotifications
 
 @MainActor
 final class GestoreLuci: ObservableObject {
@@ -15,6 +16,10 @@ final class GestoreLuci: ObservableObject {
 
     @Published var luci: [Luce] = []
     @Published var credenzialiTuya: CredenzialiTuya = CredenzialiTuya()
+    @Published var coloriSalvati: [ColoreSalvato] = []
+    @Published var routineSveglia: RoutineSveglia = RoutineSveglia()
+    @Published var crescendoInCorso = false
+    @Published var progressoCrescendo: String = ""
     @Published var scansioneInCorso = false
     @Published var sincronizzazioneTuyaInCorso = false
     @Published var statoScansione: String = ""
@@ -22,12 +27,18 @@ final class GestoreLuci: ObservableObject {
     @Published var luceApertaID: String?
     @Published var mostraAggiungi = false
 
-    private var inviiPendenti: [String: Task<Void, Never>] = [:]
+    private var attesaDebounce: [String: Task<Void, Never>] = [:]
+    private var invioInCorso: Set<String> = []
+    private var pendenteDopoInvio: Set<String> = []
+    private var taskCrescendo: Task<Void, Never>?
+    private var ultimoGiornoSvegliaAuto: String = ""
     private var ultimoRecuperoTuya: Date = .distantPast
     private let inDemo = ProcessInfo.processInfo.environment["DOMUS_DEMO"] != nil
 
     private init() {
         credenzialiTuya = ArchivioCondiviso.caricaCredenzialiTuya()
+        coloriSalvati = ArchivioCondiviso.caricaColoriSalvati()
+        routineSveglia = ArchivioCondiviso.caricaRoutineSveglia()
         let salvate = ArchivioCondiviso.caricaLuci()
         if salvate.isEmpty && inDemo {
             luci = ArchivioCondiviso.esempi
@@ -84,6 +95,125 @@ final class GestoreLuci: ObservableObject {
         mostraAvviso("Luci dimostrative caricate")
     }
 
+    // MARK: - Colori personalizzati salvati
+
+    func salvaColoreCorrente(tonalita: Double, saturazione: Double, luminosita: Double = 1.0) {
+        let giaPresente = coloriSalvati.contains {
+            abs($0.tonalita - tonalita) < 0.015 &&
+            abs($0.saturazione - saturazione) < 0.04 &&
+            abs($0.luminosita - luminosita) < 0.05
+        }
+        guard !giaPresente else {
+            mostraAvviso("Colore già salvato")
+            return
+        }
+        let nuovo = ColoreSalvato(tonalita: tonalita, saturazione: saturazione, luminosita: luminosita)
+        coloriSalvati.append(nuovo)
+        ArchivioCondiviso.salvaColoriSalvati(coloriSalvati)
+        mostraAvviso("Colore memorizzato")
+    }
+
+    func eliminaColoreSalvato(id: String) {
+        coloriSalvati.removeAll { $0.id == id }
+        ArchivioCondiviso.salvaColoriSalvati(coloriSalvati)
+    }
+
+    // MARK: - Routine Sveglia progressiva
+
+    func salvaRoutineSveglia(_ nuova: RoutineSveglia) {
+        routineSveglia = nuova
+        ArchivioCondiviso.salvaRoutineSveglia(nuova)
+        Task { await MotoreSveglia.pianificaNotifica(nuova) }
+    }
+
+    func controllaSvegliaProgrammata() {
+        guard routineSveglia.attiva, !crescendoInCorso else { return }
+        let cal = Calendar.current
+        let adesso = Date()
+        guard let target = cal.date(bySettingHour: routineSveglia.ora, minute: routineSveglia.minuto, second: 0, of: adesso) else {
+            return
+        }
+        let inizio = target.addingTimeInterval(-Double(routineSveglia.minutiPrima) * 60.0)
+        let fine = target.addingTimeInterval(90)
+        guard adesso >= inizio && adesso <= fine else { return }
+
+        let comps = cal.dateComponents([.year, .month, .day], from: adesso)
+        let chiave = "\(comps.year ?? 0)-\(comps.month ?? 0)-\(comps.day ?? 0)-\(routineSveglia.ora):\(routineSveglia.minuto)"
+        guard ultimoGiornoSvegliaAuto != chiave else { return }
+        ultimoGiornoSvegliaAuto = chiave
+        avviaCrescendoSveglia(rapidoDemo: false)
+    }
+
+    func avviaCrescendoSveglia(rapidoDemo: Bool = false) {
+        taskCrescendo?.cancel()
+        guard !luci.isEmpty else {
+            mostraAvviso("Nessuna luce configurata per la routine", errore: true)
+            return
+        }
+
+        let routine = routineSveglia
+        crescendoInCorso = true
+        progressoCrescendo = rapidoDemo ? "Test rapido avviato (10%)…" : "Crescendo avviato (10%)…"
+
+        taskCrescendo = Task { [weak self] in
+            guard let self else { return }
+            let target80 = max(0.20, min(1.0, routine.livelloSveglia))
+            let target100 = max(target80, min(1.0, routine.livelloDopoMinuto))
+
+            let passi: [(livello: Double, pausaDopo: Double)]
+            if rapidoDemo {
+                let s1 = 0.10
+                let s2 = s1 + (target80 - s1) * 0.40
+                let s3 = s1 + (target80 - s1) * 0.72
+                passi = [
+                    (s1, 2.3),
+                    (s2, 2.3),
+                    (s3, 2.4),
+                    (target80, 3.0),
+                    (target100, 0.0),
+                ]
+            } else {
+                let durataRampa = max(30.0, Double(routine.minutiPrima) * 60.0)
+                let frazioni = [0.0, 0.22, 0.44, 0.66, 0.84, 1.0]
+                let stepPausa = durataRampa / Double(frazioni.count - 1)
+                var elenco: [(Double, Double)] = []
+                for (i, f) in frazioni.enumerated() {
+                    let lvl = 0.10 + (target80 - 0.10) * f
+                    let attesa = (i == frazioni.count - 1) ? 60.0 : stepPausa
+                    elenco.append((lvl, attesa))
+                }
+                elenco.append((target100, 0.0))
+                passi = elenco
+            }
+
+            for passo in passi {
+                guard !Task.isCancelled else { break }
+                let perc = Int((passo.livello * 100).rounded())
+                self.progressoCrescendo = "Luminosità al \(perc)%"
+                if routine.soloBianco {
+                    self.applicaScena(modo: .bianco, temperatura: routine.temperatura, luminosita: passo.livello)
+                } else {
+                    self.applicaScena(modo: .colore, tonalita: routine.tonalita, saturazione: routine.saturazione, luminosita: passo.livello)
+                }
+                if passo.pausaDopo > 0 {
+                    try? await Task.sleep(for: .seconds(passo.pausaDopo))
+                }
+            }
+
+            if !Task.isCancelled {
+                self.crescendoInCorso = false
+                self.progressoCrescendo = "Completato (\(Int((target100 * 100).rounded()))%)"
+            }
+        }
+    }
+
+    func fermaCrescendoSveglia() {
+        taskCrescendo?.cancel()
+        taskCrescendo = nil
+        crescendoInCorso = false
+        progressoCrescendo = "Fermato"
+    }
+
     // MARK: - Controllo singola luce (con anti-rimbalzo per slider fluidi a 60 fps)
 
     func commuta(_ id: String) {
@@ -102,8 +232,9 @@ final class GestoreLuci: ObservableObject {
     }
 
     func elimina(_ id: String) {
-        inviiPendenti[id]?.cancel()
-        inviiPendenti[id] = nil
+        attesaDebounce[id]?.cancel()
+        attesaDebounce[id] = nil
+        pendenteDopoInvio.remove(id)
         luci.removeAll { $0.id == id }
         if luceApertaID == id { luceApertaID = nil }
         salva()
@@ -119,20 +250,40 @@ final class GestoreLuci: ObservableObject {
     }
 
     private func pianificaInvio(id: String, immediato: Bool) {
-        inviiPendenti[id]?.cancel()
         guard !inDemo else { return }
-        inviiPendenti[id] = Task { [weak self] in
-            if !immediato {
-                try? await Task.sleep(for: .milliseconds(95))
+        attesaDebounce[id]?.cancel()
+        attesaDebounce[id] = nil
+
+        if invioInCorso.contains(id) {
+            // Non interrompere la sessione TCP/Cloud in corso: invieremo lo stato più recente appena termina
+            pendenteDopoInvio.insert(id)
+            return
+        }
+
+        if immediato {
+            avviaInvioCoalesced(id: id)
+        } else {
+            attesaDebounce[id] = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(130))
+                guard !Task.isCancelled, let self else { return }
+                self.attesaDebounce[id] = nil
+                self.avviaInvioCoalesced(id: id)
             }
-            guard !Task.isCancelled, let self, let snapshot = self.luce(id: id) else { return }
+        }
+    }
+
+    private func avviaInvioCoalesced(id: String) {
+        guard !invioInCorso.contains(id), let snapshot = luce(id: id) else { return }
+        invioInCorso.insert(id)
+
+        Task { [weak self] in
+            guard let self else { return }
             let cred = self.credenzialiTuya
             var esito = await ControlloRapido.applica(snapshot, credenzialiTuya: cred)
             if snapshot.marca == .tuya && !esito.riuscito {
                 await ProtocolloTuyaCloud.condiviso.invalidaToken()
                 esito = await ControlloRapido.applica(snapshot, credenzialiTuya: cred)
             }
-            guard !Task.isCancelled else { return }
             if let i = self.luci.firstIndex(where: { $0.id == id }) {
                 self.luci[i].online = esito.riuscito
                 self.luci[i].viaLocale = esito.viaLocale
@@ -151,6 +302,11 @@ final class GestoreLuci: ObservableObject {
                 Task { [weak self] in
                     await self?.riallineaIPLocaliTuyaSilenzioso()
                 }
+            }
+
+            self.invioInCorso.remove(id)
+            if self.pendenteDopoInvio.remove(id) != nil {
+                self.avviaInvioCoalesced(id: id)
             }
         }
     }
@@ -578,5 +734,33 @@ final class GestoreLuci: ObservableObject {
             cont += 1
         }
         return cont
+    }
+}
+
+enum MotoreSveglia {
+    static let idNotifica = "it.domus.routine.sveglia"
+
+    static func pianificaNotifica(_ routine: RoutineSveglia) async {
+        let centro = UNUserNotificationCenter.current()
+        centro.removePendingNotificationRequests(withIdentifiers: [idNotifica])
+        guard routine.attiva else { return }
+
+        let permesso = (try? await centro.requestAuthorization(options: [.alert, .sound])) ?? false
+        guard permesso else { return }
+
+        let minutiTotali = ((routine.ora * 60 + routine.minuto) - routine.minutiPrima + 1440) % 1440
+        var comps = DateComponents()
+        comps.hour = minutiTotali / 60
+        comps.minute = minutiTotali % 60
+
+        let contenuto = UNMutableNotificationContent()
+        contenuto.title = "Domus · Routine Sveglia"
+        contenuto.body = "Tocca per avviare il crescendo di luci verso la sveglia delle \(routine.orarioFormattato)."
+        contenuto.sound = .default
+        contenuto.userInfo = ["url": "domus://routine-avvia"]
+
+        let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: true)
+        let richiesta = UNNotificationRequest(identifier: idNotifica, content: contenuto, trigger: trigger)
+        try? await centro.add(richiesta)
     }
 }

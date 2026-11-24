@@ -84,7 +84,37 @@ struct VistaStrisce: View {
                 .buttonStyle(.glass)
             }
 
-            DiscoColoreVetro(tonalita: $tonalitaComune, saturazione: $saturazioneComune) { finale in
+            DiscoColoreVetro(
+                tonalita: $tonalitaComune,
+                saturazione: $saturazioneComune,
+                coloriSalvati: gestore.coloriSalvati,
+                alPreset: {
+                    luminositaComune = 1.0
+                    gestore.applicaScena(
+                        modo: .colore,
+                        tonalita: tonalitaComune,
+                        saturazione: saturazioneComune,
+                        luminosita: 1.0,
+                        soloStrisce: true
+                    )
+                },
+                applicaSalvato: { salvato in
+                    luminositaComune = salvato.luminosita
+                    gestore.applicaScena(
+                        modo: .colore,
+                        tonalita: salvato.tonalita,
+                        saturazione: salvato.saturazione,
+                        luminosita: salvato.luminosita,
+                        soloStrisce: true
+                    )
+                },
+                salvaColore: {
+                    gestore.salvaColoreCorrente(tonalita: tonalitaComune, saturazione: saturazioneComune, luminosita: luminositaComune)
+                },
+                eliminaColore: { idColore in
+                    gestore.eliminaColoreSalvato(id: idColore)
+                }
+            ) { finale in
                 if finale {
                     gestore.applicaScena(
                         modo: .colore,

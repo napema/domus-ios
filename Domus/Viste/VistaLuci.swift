@@ -4,6 +4,7 @@ struct VistaLuci: View {
     @EnvironmentObject private var gestore: GestoreLuci
     @State private var stanzaSelezionata: String = "Tutte"
     @State private var marcaFiltro: MarcaLuce? = nil
+    @State private var mostraColoreTutte = false
     @Namespace private var spazioVetro
 
     private var luciFiltrate: [Luce] {
@@ -64,6 +65,12 @@ struct VistaLuci: View {
                 }
                 .accessibilityLabel("Aggiungi luce")
             }
+        }
+        .sheet(isPresented: $mostraColoreTutte) {
+            FoglioColoreTutte(stanza: stanzaSelezionata == "Tutte" ? nil : stanzaSelezionata)
+                .environmentObject(gestore)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
         }
     }
 
@@ -147,25 +154,51 @@ struct VistaLuci: View {
                 .glassEffect(.regular, in: .rect(cornerRadius: 20))
                 .glassEffectID("riepilogo", in: spazioVetro)
 
-                Button {
-                    gestore.impostaTutte(accese: true, inStanza: stanzaTarget)
-                } label: {
-                    Image(systemName: "sun.max.fill")
-                        .font(.body.weight(.semibold))
-                        .frame(width: 46, height: 48)
-                }
-                .buttonStyle(.glassProminent)
-                .accessibilityLabel("Accendi tutte")
+                if !sottolista.isEmpty {
+                    if accese == 0 {
+                        Button {
+                            gestore.impostaTutte(accese: true, inStanza: stanzaTarget)
+                        } label: {
+                            Label("ON", systemImage: "power")
+                                .font(.subheadline.weight(.bold))
+                                .padding(.horizontal, 8)
+                                .frame(height: 48)
+                        }
+                        .buttonStyle(.glassProminent)
+                        .accessibilityLabel("Accendi tutte")
+                    } else if accese == sottolista.count {
+                        Button {
+                            gestore.impostaTutte(accese: false, inStanza: stanzaTarget)
+                        } label: {
+                            Label("OFF", systemImage: "power")
+                                .font(.subheadline.weight(.bold))
+                                .padding(.horizontal, 8)
+                                .frame(height: 48)
+                        }
+                        .buttonStyle(.glass)
+                        .accessibilityLabel("Spegni tutte")
+                    } else {
+                        Button {
+                            gestore.impostaTutte(accese: true, inStanza: stanzaTarget)
+                        } label: {
+                            Text("ON")
+                                .font(.subheadline.weight(.bold))
+                                .frame(width: 48, height: 48)
+                        }
+                        .buttonStyle(.glassProminent)
+                        .accessibilityLabel("Accendi tutte")
 
-                Button {
-                    gestore.impostaTutte(accese: false, inStanza: stanzaTarget)
-                } label: {
-                    Image(systemName: "moon.fill")
-                        .font(.body.weight(.semibold))
-                        .frame(width: 46, height: 48)
+                        Button {
+                            gestore.impostaTutte(accese: false, inStanza: stanzaTarget)
+                        } label: {
+                            Text("OFF")
+                                .font(.subheadline.weight(.bold))
+                                .frame(width: 48, height: 48)
+                        }
+                        .buttonStyle(.glass)
+                        .accessibilityLabel("Spegni tutte")
+                    }
                 }
-                .buttonStyle(.glass)
-                .accessibilityLabel("Spegni tutte")
             }
         }
     }
@@ -224,6 +257,10 @@ struct VistaLuci: View {
                     pulsanteScena(titolo: "Notte soffusa", icona: "sparkles", tinta: Color(esadecimale: "#7D5CFF")) {
                         gestore.applicaScena(modo: .bianco, temperatura: 0.0, luminosita: 0.12, stanza: stanzaTarget)
                     }
+                    pulsanteScena(titolo: "Colore", icona: "plus", tinta: Color(hue: 0.92, saturation: 0.95, brightness: 1.0)) {
+                        toccoLeggero()
+                        mostraColoreTutte = true
+                    }
                 }
             }
         }
@@ -260,5 +297,110 @@ struct VistaLuci: View {
                 TesseraLuceVetro(luce: luce)
             }
         }
+    }
+}
+
+/// Selettore cromatico simultaneo per applicare qualsiasi colore e salvarlo per tutta la casa o stanza.
+private struct FoglioColoreTutte: View {
+    @EnvironmentObject private var gestore: GestoreLuci
+    @Environment(\.dismiss) private var chiudi
+    let stanza: String?
+
+    @State private var tonalita: Double = 0.0
+    @State private var saturazione: Double = 1.0
+    @State private var luminosita: Double = 1.0
+
+    var body: some View {
+        let colore = Color(hue: tonalita, saturation: saturazione, brightness: 1.0)
+        NavigationStack {
+            ZStack {
+                SfondoAurora(luci: [Luce(
+                    id: "preview",
+                    nome: "",
+                    stanza: stanza ?? "Casa",
+                    marca: .magicHome,
+                    tipo: .lampadina,
+                    accensione: true,
+                    luminosita: luminosita,
+                    tonalita: tonalita,
+                    saturazione: saturazione,
+                    modo: .colore
+                )])
+
+                ScrollView {
+                    VStack(spacing: 18) {
+                        CartaVetro(tinta: colore.opacity(0.14), raggio: 26, padding: 18) {
+                            Text(stanza == nil ? "Tutte le luci (Tuya + Magic Home)" : "Stanza: \(stanza!)")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary)
+
+                            DiscoColoreVetro(
+                                tonalita: $tonalita,
+                                saturazione: $saturazione,
+                                coloriSalvati: gestore.coloriSalvati,
+                                alPreset: {
+                                    luminosita = 1.0
+                                    applicaTutte()
+                                },
+                                applicaSalvato: { salvato in
+                                    luminosita = salvato.luminosita
+                                    applicaTutte()
+                                },
+                                salvaColore: {
+                                    gestore.salvaColoreCorrente(tonalita: tonalita, saturazione: saturazione, luminosita: luminosita)
+                                },
+                                eliminaColore: { idColore in
+                                    gestore.eliminaColoreSalvato(id: idColore)
+                                }
+                            ) { finale in
+                                if finale { applicaTutte() }
+                            }
+
+                            BarraTattileVetro(
+                                titolo: "Intensità simultanea",
+                                simbolo: "sun.max.fill",
+                                valore: $luminosita,
+                                coloreBarra: colore
+                            ) {
+                                applicaTutte()
+                            }
+                        }
+
+                        Button {
+                            applicaTutte()
+                            chiudi()
+                        } label: {
+                            Label("Applica a tutte", systemImage: "checkmark.circle.fill")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 6)
+                        }
+                        .buttonStyle(.glassProminent)
+                        .tint(colore)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 10)
+                    .padding(.bottom, 32)
+                }
+            }
+            .navigationTitle("Colore simultaneo")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Chiudi") { chiudi() }
+                        .fontWeight(.semibold)
+                }
+            }
+        }
+    }
+
+    private func applicaTutte() {
+        gestore.applicaScena(
+            modo: .colore,
+            tonalita: tonalita,
+            saturazione: saturazione,
+            luminosita: luminosita,
+            stanza: stanza
+        )
     }
 }

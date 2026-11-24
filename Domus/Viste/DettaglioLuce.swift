@@ -202,7 +202,31 @@ struct DettaglioLuce: View {
                             m.saturazione = s
                             gestore.aggiorna(m, immediato: false)
                         }
-                    )
+                    ),
+                    coloriSalvati: gestore.coloriSalvati,
+                    alPreset: {
+                        var m = gestore.luce(id: luce.id) ?? luce
+                        m.accensione = true
+                        m.modo = .colore
+                        m.luminosita = 1.0
+                        gestore.aggiorna(m, immediato: true)
+                    },
+                    applicaSalvato: { salvato in
+                        var m = gestore.luce(id: luce.id) ?? luce
+                        m.accensione = true
+                        m.modo = .colore
+                        m.tonalita = salvato.tonalita
+                        m.saturazione = salvato.saturazione
+                        m.luminosita = salvato.luminosita
+                        gestore.aggiorna(m, immediato: true)
+                    },
+                    salvaColore: {
+                        let corr = gestore.luce(id: luce.id) ?? luce
+                        gestore.salvaColoreCorrente(tonalita: corr.tonalita, saturazione: corr.saturazione, luminosita: corr.luminosita)
+                    },
+                    eliminaColore: { idColore in
+                        gestore.eliminaColoreSalvato(id: idColore)
+                    }
                 ) { finale in
                     if finale, let aggiornata = gestore.luce(id: luce.id) {
                         gestore.aggiorna(aggiornata, immediato: true)

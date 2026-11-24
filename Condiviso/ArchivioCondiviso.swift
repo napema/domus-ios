@@ -6,6 +6,8 @@ import WidgetKit
 enum ArchivioCondiviso {
     private static let fileLuci = "luci-domus.json"
     private static let fileTuya = "credenziali-tuya.json"
+    private static let fileColori = "colori-salvati.json"
+    private static let fileRoutine = "routine-sveglia.json"
 
     private static let codificatore: JSONEncoder = {
         let e = JSONEncoder()
@@ -45,6 +47,36 @@ enum ArchivioCondiviso {
     static func salvaCredenzialiTuya(_ credenziali: CredenzialiTuya) {
         guard let url = GruppoDomus.file(fileTuya),
               let dati = try? codificatore.encode(credenziali) else { return }
+        try? dati.write(to: url, options: .atomic)
+    }
+
+    static func caricaColoriSalvati() -> [ColoreSalvato] {
+        guard let url = GruppoDomus.file(fileColori),
+              let dati = try? Data(contentsOf: url),
+              let elenco = try? decodificatore.decode([ColoreSalvato].self, from: dati) else {
+            return []
+        }
+        return elenco
+    }
+
+    static func salvaColoriSalvati(_ colori: [ColoreSalvato]) {
+        guard let url = GruppoDomus.file(fileColori),
+              let dati = try? codificatore.encode(colori) else { return }
+        try? dati.write(to: url, options: .atomic)
+    }
+
+    static func caricaRoutineSveglia() -> RoutineSveglia {
+        guard let url = GruppoDomus.file(fileRoutine),
+              let dati = try? Data(contentsOf: url),
+              let routine = try? decodificatore.decode(RoutineSveglia.self, from: dati) else {
+            return RoutineSveglia()
+        }
+        return routine
+    }
+
+    static func salvaRoutineSveglia(_ routine: RoutineSveglia) {
+        guard let url = GruppoDomus.file(fileRoutine),
+              let dati = try? codificatore.encode(routine) else { return }
         try? dati.write(to: url, options: .atomic)
     }
 

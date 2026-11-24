@@ -290,21 +290,26 @@ struct SelettoreBiancoVetro: View {
     }
 }
 
-/// Ruota cromatica HSB interattiva + tavolozza colori rapidi per lampadine e strisce LED.
+/// Ruota cromatica HSB interattiva + tavolozza colori fedeli al 100% + colori salvati.
 struct DiscoColoreVetro: View {
     @Binding var tonalita: Double
     @Binding var saturazione: Double
+    var coloriSalvati: [ColoreSalvato] = []
+    var alPreset: (() -> Void)? = nil
+    var applicaSalvato: ((ColoreSalvato) -> Void)? = nil
+    var salvaColore: (() -> Void)? = nil
+    var eliminaColore: ((String) -> Void)? = nil
     var alCambio: (Bool) -> Void
 
-    private let coloriRapidi: [(Double, Double)] = [
-        (0.02, 0.90), // Rosso corallo
-        (0.08, 0.88), // Ambra
-        (0.15, 0.85), // Oro
-        (0.35, 0.85), // Smeraldo
-        (0.53, 0.88), // Ciano
-        (0.64, 0.90), // Blu notte
-        (0.77, 0.86), // Viola neon
-        (0.90, 0.84), // Magenta
+    private let coloriRapidi: [(nome: String, h: Double, s: Double)] = [
+        ("Rosso", 0.0, 1.0),
+        ("Arancio", 24.0 / 360.0, 1.0),
+        ("Giallo", 56.0 / 360.0, 1.0),
+        ("Verde", 120.0 / 360.0, 1.0),
+        ("Ciano", 180.0 / 360.0, 1.0),
+        ("Blu", 240.0 / 360.0, 1.0),
+        ("Viola", 275.0 / 360.0, 1.0),
+        ("Magenta", 315.0 / 360.0, 1.0),
     ]
 
     var body: some View {
@@ -371,22 +376,86 @@ struct DiscoColoreVetro: View {
             .frame(height: 234)
 
             HStack(spacing: 10) {
-                ForEach(Array(coloriRapidi.enumerated()), id: \.offset) { _, coppia in
-                    let attivo = abs(tonalita - coppia.0) < 0.04 && saturazione > 0.6
+                ForEach(coloriRapidi, id: \.nome) { voce in
+                    let distH = min(abs(tonalita - voce.h), 1.0 - abs(tonalita - voce.h))
+                    let attivo = distH < 0.04 && saturazione > 0.75
                     Button {
                         toccoSelezione()
-                        tonalita = coppia.0
-                        saturazione = coppia.1
-                        alCambio(true)
+                        tonalita = voce.h
+                        saturazione = voce.s
+                        if let alPreset {
+                            alPreset()
+                        } else {
+                            alCambio(true)
+                        }
                     } label: {
                         Circle()
-                            .fill(Color(hue: coppia.0, saturation: coppia.1, brightness: 1.0))
+                            .fill(Color(hue: voce.h, saturation: voce.s, brightness: 1.0))
                             .frame(width: 32, height: 32)
                             .overlay {
                                 Circle().stroke(.white.opacity(attivo ? 1.0 : 0.25), lineWidth: attivo ? 2.5 : 1)
                             }
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(voce.nome)
+                }
+            }
+
+            if salvaColore != nil || !coloriSalvati.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Colori salvati")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            if let salvaColore {
+                                Button {
+                                    toccoSelezione()
+                                    salvaColore()
+                                } label: {
+                                    Label("Salva", systemImage: "plus")
+                                        .font(.caption.weight(.semibold))
+                                        .padding(.horizontal, 12)
+                                        .frame(height: 32)
+                                        .glassEffect(.regular.interactive(), in: .capsule)
+                                }
+                                .buttonStyle(.plain)
+                            }
+
+                            ForEach(coloriSalvati) { salvato in
+                                let dist = min(abs(tonalita - salvato.tonalita), 1.0 - abs(tonalita - salvato.tonalita))
+                                let attivo = dist < 0.03 && abs(saturazione - salvato.saturazione) < 0.08
+                                Button {
+                                    toccoSelezione()
+                                    tonalita = salvato.tonalita
+                                    saturazione = salvato.saturazione
+                                    if let applicaSalvato {
+                                        applicaSalvato(salvato)
+                                    } else {
+                                        alCambio(true)
+                                    }
+                                } label: {
+                                    Circle()
+                                        .fill(salvato.colore)
+                                        .frame(width: 32, height: 32)
+                                        .overlay {
+                                            Circle().stroke(.white.opacity(attivo ? 1.0 : 0.3), lineWidth: attivo ? 2.5 : 1)
+                                        }
+                                }
+                                .buttonStyle(.plain)
+                                .contextMenu {
+                                    if let eliminaColore {
+                                        Button(role: .destructive) {
+                                            eliminaColore(salvato.id)
+                                        } label: {
+                                            Label("Elimina colore", systemImage: "trash")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
