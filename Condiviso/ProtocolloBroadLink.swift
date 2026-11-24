@@ -185,6 +185,7 @@ enum ProtocolloBroadLink {
 
                 // 1. Auth (cmd 0x65)
                 var authPayload = Data(count: 0x50)
+                for i in 0x04...0x12 { authPayload[i] = 0x31 }
                 authPayload[0x1E] = 0x01
                 authPayload[0x2D] = 0x01
                 let nome = Array("Domus".utf8)

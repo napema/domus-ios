@@ -141,6 +141,9 @@ final class GestoreLuci: ObservableObject {
                 }
                 ArchivioCondiviso.salvaLuci(self.luci)
             }
+            if snapshot.marca == .magicHome && snapshot.varianteMagic == .broadlink && !esito.riuscito {
+                self.mostraAvviso("Lampadina Magic Home bloccata: disattiva «Blocca dispositivo» nell'app Magic Home", errore: true)
+            }
             if snapshot.marca == .tuya && !esito.viaLocale,
                ReteLocale.infoWiFi() != nil,
                Date().timeIntervalSince(self.ultimoRecuperoTuya) > 120 {

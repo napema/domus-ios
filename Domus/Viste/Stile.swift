@@ -118,13 +118,24 @@ struct EtichettaProtocollo: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
-            Image(systemName: luce.viaLocale ? "bolt.horizontal.fill" : "cloud.fill")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(luce.viaLocale ? Color.successoDomus : Color.cianoDomus)
+            if luce.marca == .magicHome {
+                let localeAttiva = luce.viaLocale && luce.online
+                Image(systemName: localeAttiva ? "bolt.horizontal.fill" : "lock.fill")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(localeAttiva ? Color.successoDomus : Color.accentoDomus)
 
-            Text(luce.viaLocale ? "LAN" : "Cloud")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                Text(localeAttiva ? "LAN" : "Bloccata / Offline")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Image(systemName: luce.viaLocale ? "bolt.horizontal.fill" : "cloud.fill")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(luce.viaLocale ? Color.successoDomus : Color.cianoDomus)
+
+                Text(luce.viaLocale ? "LAN" : "Cloud")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }
