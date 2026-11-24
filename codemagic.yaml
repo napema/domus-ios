@@ -1,0 +1,49 @@
+# Compila Domus su un Mac di Codemagic con SDK Xcode 27 (Liquid Glass nativo iOS 26/27).
+# Produce l'IPA non firmato (Domus.ipa e Domus-senza-widget.ipa) pronto per SideStore / iLoader.
+workflows:
+  compila:
+    name: Compila Domus (iOS 27 Liquid Glass)
+    instance_type: mac_mini_m2
+    max_build_duration: 30
+    environment:
+      xcode: edge
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+      cancel_previous_builds: true
+    when:
+      changeset:
+        excludes:
+          - README.md
+    scripts:
+      - name: Strumenti e generazione progetto Xcode
+        script: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodebuild -version
+          xcodegen generate
+      - name: Compila per iPhone (Release)
+        script: |
+          set -o pipefail
+          xcodebuild -project Domus.xcodeproj -scheme Domus -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee build.log | { grep -E "error:|warning: unre|BUILD|\*\*" || true; }
+          test -x build/Build/Products/Release-iphoneos/Domus.app/Domus
+      - name: Crea gli IPA (con e senza widget)
+        script: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/Domus.app Payload/
+          zip -qry Domus.ipa Payload
+          # Riserva senza estensione widget, se chi firma non registra gli App ID delle estensioni
+          rm -rf Payload/Domus.app/PlugIns
+          zip -qry Domus-senza-widget.ipa Payload
+          ls -lh Domus.ipa Domus-senza-widget.ipa
+    artifacts:
+      - Domus.ipa
+      - Domus-senza-widget.ipa
+      - build.log

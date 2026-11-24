@@ -1,0 +1,8 @@
+.DS_Store
+*.xcodeproj
+build/
+build-sim/
+Payload/
+*.ipa
+*.log
+sorgente.json

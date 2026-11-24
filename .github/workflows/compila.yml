@@ -1,0 +1,105 @@
+# Compila Domus anche su GitHub Actions (opzionale, identico a Life): IPA non firmato e sorgente.json per SideStore.
+name: Compila Domus
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - README.md
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: compila-domus
+  cancel-in-progress: true
+
+jobs:
+  compila:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Strumenti
+        run: |
+          brew install xcodegen
+          xcodebuild -version
+          xcodegen generate
+
+      - name: Compila per iPhone
+        run: |
+          set -o pipefail
+          xcodebuild -project Domus.xcodeproj -scheme Domus -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee build.log | { grep -E "error:|warning: unre|BUILD|\*\*" || true; }
+          test -x build/Build/Products/Release-iphoneos/Domus.app/Domus
+
+      - name: Elenco degli errori
+        if: failure()
+        run: grep -E "error:" build.log | sort -u | head -150 || true
+
+      - name: Crea l'IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/Domus.app Payload/
+          zip -qry Domus.ipa Payload
+          rm -rf Payload/Domus.app/PlugIns
+          zip -qry Domus-senza-widget.ipa Payload
+          ls -lh Domus.ipa Domus-senza-widget.ipa
+
+      - name: Pubblica per SideStore
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSIONE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Payload/Domus.app/Info.plist)
+          NUMERO=${{ github.run_number }}
+          DIMENSIONE=$(stat -f%z Domus.ipa)
+          OGGI=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          URL="https://github.com/${{ github.repository }}/releases/download/ultima/Domus.ipa"
+          cat > sorgente.json <<EOF
+          {
+            "name": "Domus",
+            "identifier": "it.domus.sorgente",
+            "apps": [{
+              "name": "Domus",
+              "bundleIdentifier": "it.domus.app",
+              "developerName": "Domus",
+              "localizedDescription": "Controllo nativo Liquid Glass per lampadine e strisce LED Tuya e Magic Home.",
+              "iconURL": "https://raw.githubusercontent.com/${{ github.repository }}/main/Domus/Risorse/icona.png",
+              "appPermissions": {
+                "entitlements": [],
+                "privacy": {
+                  "NSLocalNetworkUsageDescription": "Controllo diretto Wi-Fi per lampadine e strisce LED Magic Home e Tuya."
+                }
+              },
+              "versions": [{
+                "version": "$VERSIONE",
+                "buildVersion": "$NUMERO",
+                "date": "$OGGI",
+                "downloadURL": "$URL",
+                "size": $DIMENSIONE,
+                "minOSVersion": "26.1"
+              }]
+            }]
+          }
+          EOF
+          if gh release view ultima > /dev/null 2>&1; then
+            gh release upload ultima Domus.ipa Domus-senza-widget.ipa sorgente.json --clobber
+            gh release edit ultima --title "Domus (build $NUMERO)"
+          else
+            gh release create ultima Domus.ipa Domus-senza-widget.ipa sorgente.json --title "Domus (build $NUMERO)" --notes "Compilata automaticamente."
+          fi
+
+      - name: Conserva i risultati
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: risultati
+          path: |
+            Domus.ipa
+            Domus-senza-widget.ipa
+            build.log
+          if-no-files-found: warn
