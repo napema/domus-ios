@@ -55,7 +55,7 @@ enum ReteLocale {
 
     /// Scansiona tutti i 254 indirizzi della sottorete `/24` cercando host con una porta TCP aperta (5577 o 6668).
     static func scansionaPorta(prefisso: String, porta: UInt16, escludendo ipProprio: String? = nil, timeoutMs: Int32 = 340) async -> [String] {
-        let candidati = (1...254).map { "\(prefisso).\($0)" }.filter { $0 != ipProprio }
+        let candidati: [String] = (1...254).map { "\(prefisso).\($0)" }.filter { $0 != ipProprio }
         var aperti: [String] = []
         let dimensioneBlocco = 64
 
